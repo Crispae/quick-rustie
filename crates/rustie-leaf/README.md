@@ -28,6 +28,17 @@ Per split, the warmup:
 The scorer then yields only the candidates the pattern matches exactly, so `num_hits`, top-k and
 `search_after` are exact and non-matching sentences are never fetched.
 
+**Postings-decided patterns skip steps 2–4.** When the pattern is one token test on one field (a
+literal or a regex) or alternatives of them (`[tag=/VB.*/]`, `[word=cat | tag=NN]`), the
+candidates already are the matches (`SurfacePlan::exact`, decided in the compiler). No positions,
+sentence lengths or per-sentence checks are read, so `[tag=VBD]` over 5M sentences counts in tens
+of milliseconds rather than a second. Sequences, phrases, quantifiers, conjunctions on one
+token, fuzzy tests and negation still go through the exact matcher; the differential test in
+`tests/leaf_search.rs` covers both kinds.
+
+Set `RUST_LOG=rustie_leaf=debug` to log, per segment, the candidate count and the time spent on
+candidates, leaf expansion and graph blocks.
+
 ## Tests
 
 ```bash

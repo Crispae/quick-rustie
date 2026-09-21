@@ -60,7 +60,9 @@ let results = searcher.search(SearchQuery::new("[word=John] >nsubj [pos=VBZ]").l
 - **Cursor paging.** `next_cursor` resumes right after the last hit (Quickwit `search_after`), so
   page N costs the same as page 1. A cursor is bound to its query.
 - **Warm caches.** One long-lived Quickwit `SearcherContext` serves every query and survives
-  metastore refreshes; graph blocks are cached process-wide (`RUSTIE_GRAPH_CACHE_MB`, default 512).
+  metastore refreshes; graph blocks are cached process-wide (`RUSTIE_GRAPH_CACHE_MB`, default 512). Graph data is about
+  130 bytes per sentence (≈ 700 MB for 5M sentences): size the cache to hold it, or every graph
+  query with many candidates re-reads it from storage.
 - **No authentication or TLS.** It binds to loopback by default; put a proxy in front to expose it.
 - **Freshness.** The file-backed metastore does not poll; `--refresh-secs` (default 30) re-opens it.
 - **Old splits.** Splits indexed before the graph component existed match no graph pattern:

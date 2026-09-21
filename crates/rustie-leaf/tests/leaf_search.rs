@@ -112,6 +112,14 @@ const PATTERNS: &[&str] = &[
     "[tag=/NN|VBD/]+ [word=loudly]",
     "(?<x> [word=the]) (?= [tag=NN])",
     "[word=nothing]",
+    // Decided by postings alone (no per-sentence check): single tests and alternatives.
+    "[tag=NN]",
+    "[tag=/NN|VBD/]",
+    "[word=/[a-c].*/]",
+    "[word=cat | tag=RB]",
+    "[lemma=dog | word=the]",
+    "(?<n> [tag=DT])",
+    "[entity=nothing]",
     // Graph patterns: labels, directions, wildcards, quantifiers, colocated tags, spans.
     "[tag=VBD] >nsubj [word=cat]",
     "[] >nsubj []",

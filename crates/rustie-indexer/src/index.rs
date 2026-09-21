@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use quickwit_common::uri::Uri;
@@ -22,9 +22,10 @@ use quickwit_proto::metastore::{
 };
 use quickwit_proto::types::NodeId;
 use quickwit_storage::StorageResolver;
-use rustie_schema::{IndexConfigOptions, postings_index_config_yaml};
+use rustie_schema::{DEFAULT_SPLIT_NUM_DOCS_TARGET, IndexConfigOptions, postings_index_config_yaml};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
+use rayon::prelude::*;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -34,9 +35,10 @@ use crate::minio::MinioConfig;
 use crate::pipeline::PipelineRuntime;
 use crate::store::{IndexSummary, index_summary, open_metastore};
 
-/// Flattened batches buffered ahead of the indexing pipeline. One is enough to overlap
-/// file parsing with indexing while keeping memory bounded.
-const PREFETCH_BATCHES: usize = 1;
+/// Prepared (flattened and validated) batches buffered ahead of the indexing pipeline. Reading
+/// the next batches while one is indexing hides their cost; the bound keeps memory small (a
+/// batch of 5,000 files is a few tens of MB).
+const PREFETCH_BATCHES: usize = 2;
 
 /// What to do with sentence documents the doc mapping rejects.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -63,6 +65,12 @@ pub struct IndexerOptions {
     /// Documents per raw batch handed to the doc processor by the source.
     pub source_batch_num_docs: usize,
     pub on_invalid_doc: InvalidDocPolicy,
+    /// Splits with at least this many documents are never merged again. Applies when the index
+    /// is created; it bounds how large a split (the unit of search parallelism) can grow.
+    pub split_num_docs_target: usize,
+    /// Threads for reading, decompressing, flattening and validating input (`0` = one per
+    /// core, `1` = fully serial, as before parallel preparation existed).
+    pub threads: usize,
 }
 
 impl IndexerOptions {
@@ -76,6 +84,8 @@ impl IndexerOptions {
             data_dir: None,
             source_batch_num_docs: 1_000,
             on_invalid_doc: InvalidDocPolicy::default(),
+            split_num_docs_target: DEFAULT_SPLIT_NUM_DOCS_TARGET,
+            threads: 0,
         }
     }
 
@@ -90,6 +100,11 @@ impl IndexerOptions {
     fn validate(&self) -> Result<()> {
         if self.index_id.is_empty() {
             return Err(IndexerError::InvalidConfig("index_id is empty".into()));
+        }
+        if self.split_num_docs_target == 0 {
+            return Err(IndexerError::InvalidConfig(
+                "split_num_docs_target must be positive".into(),
+            ));
         }
         if self.source_batch_num_docs == 0 {
             return Err(IndexerError::InvalidConfig(
@@ -121,6 +136,39 @@ pub enum IndexStatus {
     AlreadyExisted,
 }
 
+/// Where the time of an indexing run went. Preparation runs ahead of, and in parallel with, the
+/// pipeline, so the parts overlap; `input_wait` is the part the pipeline spent idle for lack
+/// of a prepared batch (large means reading input is the bottleneck).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PhaseTimings {
+    /// Wall time reading, decompressing and flattening batches.
+    pub flatten: Duration,
+    /// Wall time validating them against the doc mapping.
+    pub validate: Duration,
+    /// Time the consumer waited for the next prepared batch.
+    pub input_wait: Duration,
+    /// Wall time hashing a batch into its checkpoint partition id (reader thread).
+    pub partition_hash: Duration,
+    /// Spawning the pipeline and detaching its handles.
+    pub spawn: Duration,
+    /// Time in Quickwit's indexing pipeline (until splits are published).
+    pub indexing: Duration,
+    /// Time waiting for merges to finish after each batch.
+    pub merge_drain: Duration,
+}
+
+impl PhaseTimings {
+    fn absorb(&mut self, other: PhaseTimings) {
+        self.flatten += other.flatten;
+        self.validate += other.validate;
+        self.input_wait += other.input_wait;
+        self.partition_hash += other.partition_hash;
+        self.spawn += other.spawn;
+        self.indexing += other.indexing;
+        self.merge_drain += other.merge_drain;
+    }
+}
+
 /// Aggregated counters for one or more indexed batches.
 #[derive(Debug, Clone, Default)]
 pub struct IndexingStats {
@@ -145,6 +193,7 @@ pub struct IndexingStats {
     pub batches_already_indexed: usize,
     /// The run stopped early because [`Indexer::request_stop`] was called.
     pub interrupted: bool,
+    pub timings: PhaseTimings,
 }
 
 impl IndexingStats {
@@ -161,6 +210,7 @@ impl IndexingStats {
         self.batches += other.batches;
         self.batches_already_indexed += other.batches_already_indexed;
         self.interrupted |= other.interrupted;
+        self.timings.absorb(other.timings);
     }
 }
 
@@ -195,6 +245,8 @@ pub struct Indexer {
     index_config: IndexConfig,
     doc_mapper: Arc<DocMapper>,
     mapped_fields: Arc<HashSet<String>>,
+    /// Threads preparing input (see [`IndexerOptions::threads`]).
+    pool: Arc<rayon::ThreadPool>,
     metastore: MetastoreServiceClient,
     storage_resolver: StorageResolver,
     runtime: Option<PipelineRuntime>,
@@ -239,6 +291,16 @@ impl Indexer {
             }
         };
 
+        let threads = match options.threads {
+            0 => std::thread::available_parallelism().map_or(1, usize::from),
+            n => n,
+        };
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .thread_name(|i| format!("rustie-prep-{i}"))
+            .build()
+            .map_err(|err| IndexerError::Pipeline(format!("thread pool: {err}")))?;
+
         let node_id = NodeId::from_str(&format!("rustie-indexer-{}", std::process::id()));
         let runtime = PipelineRuntime::start(
             node_id,
@@ -253,6 +315,7 @@ impl Indexer {
             index_config,
             doc_mapper,
             mapped_fields: Arc::new(mapped_fields),
+            pool: Arc::new(pool),
             metastore,
             storage_resolver,
             runtime: Some(runtime),
@@ -406,18 +469,26 @@ impl Indexer {
     /// byte-identical documents again is a no-op (`batches_already_indexed`). Submitting
     /// *overlapping but different* batches indexes the overlap twice.
     pub async fn index_docs(&self, docs: Vec<JsonValue>) -> Result<IndexingStats> {
-        let mut stats = IndexingStats::default();
         if docs.is_empty() {
-            return Ok(stats);
+            return Ok(IndexingStats::default());
         }
+        let pool = Arc::clone(&self.pool);
         let mapper = Arc::clone(&self.doc_mapper);
         let mapped_fields = Arc::clone(&self.mapped_fields);
         let prepared =
-            tokio::task::spawn_blocking(move || prepare_docs(docs, &mapped_fields, &mapper))
+            tokio::task::spawn_blocking(move || prepare_docs_on(&pool, docs, &mapped_fields, &mapper))
                 .await
                 .map_err(|err| IndexerError::Pipeline(format!("doc validation panicked: {err}")))?;
-        stats.unmapped_fields = prepared.unmapped_fields;
-        stats.docs_invalid = prepared.num_invalid;
+        self.submit_prepared(prepared).await
+    }
+
+    /// Hand validated documents to the indexing pipeline and wait for their splits.
+    async fn submit_prepared(&self, prepared: PreparedDocs) -> Result<IndexingStats> {
+        let mut stats = IndexingStats {
+            unmapped_fields: prepared.unmapped_fields,
+            docs_invalid: prepared.num_invalid,
+            ..Default::default()
+        };
         if prepared.num_invalid > 0 && self.options.on_invalid_doc == InvalidDocPolicy::Fail {
             return Err(IndexerError::InvalidDocuments {
                 count: prepared.num_invalid,
@@ -432,13 +503,14 @@ impl Indexer {
             return Ok(stats);
         }
         let num_docs = docs.len() as u64;
+        let partition = prepared.partition;
         let source_config = SourceConfig {
             // A default source registered on every index by `IndexService::create_index`.
             source_id: CLI_SOURCE_ID.to_string(),
             num_pipelines: NonZeroUsize::MIN,
             enabled: true,
             source_params: SourceParams::Vec(VecSourceParams {
-                partition: content_partition(&docs),
+                partition,
                 docs,
                 batch_num_docs: self.options.source_batch_num_docs,
             }),
@@ -449,13 +521,17 @@ impl Indexer {
             .runtime
             .as_ref()
             .expect("runtime is present until drop");
-        let pipeline_stats = runtime
+        let run = runtime
             .run_source(&self.options.index_id, source_config)
             .await?;
+        let pipeline_stats = run.statistics;
 
         stats.batches = 1;
         stats.docs_submitted = num_docs;
         stats.docs_processed = pipeline_stats.num_docs;
+        stats.timings.spawn = run.spawn;
+        stats.timings.indexing = run.indexing;
+        stats.timings.merge_drain = run.merge_drain;
         if pipeline_stats.num_invalid_docs > 0 {
             // Pre-validation uses the same doc mapper, so this indicates a bug or a Quickwit
             // behavior change. The batch's checkpoint is already advanced: surface loudly.
@@ -477,6 +553,11 @@ impl Indexer {
     ///
     /// Files that fail to parse are skipped and reported in [`IndexingStats::failures`];
     /// a pipeline or storage failure aborts the run (earlier batches stay published).
+    ///
+    /// The next batches are read, flattened and validated (in parallel, see
+    /// [`IndexerOptions::threads`]) while the current one is being indexed. Batches are still
+    /// submitted one at a time, in file order, with the same content (hence the same
+    /// checkpoint) as a serial run.
     pub async fn index_odinson_dir(
         &self,
         dir: &std::path::Path,
@@ -495,10 +576,32 @@ impl Indexer {
         let total_files = files.len();
         info!(total_files, batch_size, "indexing Odinson files");
 
-        let (tx, mut rx) = mpsc::channel(PREFETCH_BATCHES);
+        struct PreparedBatch {
+            num_files: usize,
+            num_failed_files: usize,
+            failures: Vec<FileFailure>,
+            prepared: PreparedDocs,
+            flatten: Duration,
+        }
+
+        let (tx, mut rx) = mpsc::channel::<PreparedBatch>(PREFETCH_BATCHES);
+        let pool = Arc::clone(&self.pool);
+        let mapper = Arc::clone(&self.doc_mapper);
+        let mapped_fields = Arc::clone(&self.mapped_fields);
         let producer = tokio::task::spawn_blocking(move || {
             for chunk in files.chunks(batch_size) {
-                if tx.blocking_send(flatten_files(chunk)).is_err() {
+                let started = Instant::now();
+                let flattened = pool.install(|| flatten_files(chunk));
+                let flatten = started.elapsed();
+                let prepared = prepare_docs_on(&pool, flattened.docs, &mapped_fields, &mapper);
+                let batch = PreparedBatch {
+                    num_files: flattened.num_files,
+                    num_failed_files: flattened.num_failed_files,
+                    failures: flattened.failures,
+                    prepared,
+                    flatten,
+                };
+                if tx.blocking_send(batch).is_err() {
                     break; // consumer stopped (error or interrupt)
                 }
             }
@@ -506,7 +609,10 @@ impl Indexer {
 
         let started = Instant::now();
         let mut totals = IndexingStats::default();
-        while let Some(batch) = rx.recv().await {
+        loop {
+            let waiting_since = Instant::now();
+            let Some(batch) = rx.recv().await else { break };
+            let input_wait = waiting_since.elapsed();
             if self.stop.load(Ordering::SeqCst) {
                 totals.interrupted = true;
                 warn!("stop requested; halting before next batch");
@@ -516,11 +622,16 @@ impl Indexer {
                 files_seen: batch.num_files,
                 files_failed: batch.num_failed_files,
                 failures: batch.failures,
+                timings: PhaseTimings {
+                    flatten: batch.flatten,
+                    validate: batch.prepared.validate,
+                    partition_hash: batch.prepared.partition_hash,
+                    input_wait,
+                    ..Default::default()
+                },
                 ..Default::default()
             };
-            if !batch.docs.is_empty() {
-                batch_stats.absorb(self.index_docs(batch.docs).await?);
-            }
+            batch_stats.absorb(self.submit_prepared(batch.prepared).await?);
             totals.absorb(batch_stats);
 
             let secs = started.elapsed().as_secs_f64().max(f64::EPSILON);
@@ -555,6 +666,7 @@ fn build_index_config(options: &IndexerOptions) -> Result<IndexConfig> {
     let yaml = postings_index_config_yaml(&IndexConfigOptions {
         index_id: options.index_id.clone(),
         index_uri: options.index_uri(),
+        split_num_docs_target: options.split_num_docs_target,
         ..Default::default()
     });
     let root = Uri::from_str(&options.index_root_uri)
@@ -568,46 +680,99 @@ struct PreparedDocs {
     num_invalid: u64,
     invalid_sample: Vec<String>,
     unmapped_fields: BTreeSet<String>,
+    /// Wall time validating the documents.
+    validate: Duration,
+    /// The batch's checkpoint partition id ([`content_partition`] of `docs`).
+    partition: String,
+    /// Wall time hashing `docs` into `partition`.
+    partition_hash: Duration,
 }
 
 const MAX_INVALID_SAMPLES: usize = 5;
+
+/// [`prepare_docs`] on the preparation pool, timed.
+fn prepare_docs_on(
+    pool: &rayon::ThreadPool,
+    docs: Vec<JsonValue>,
+    mapped_fields: &HashSet<String>,
+    mapper: &DocMapper,
+) -> PreparedDocs {
+    let started = Instant::now();
+    let mut prepared = pool.install(|| prepare_docs(docs, mapped_fields, mapper));
+    prepared.validate = started.elapsed();
+    // Hashed here, off the pipeline's critical path (it reads every byte of the batch).
+    let hashing = Instant::now();
+    prepared.partition = content_partition(&prepared.docs);
+    prepared.partition_hash = hashing.elapsed();
+    prepared
+}
 
 /// Drop fields the mapping does not declare, then check each document against the doc
 /// mapper exactly as the pipeline will. Quickwit advances a source's checkpoint past
 /// invalid documents, so letting them reach the pipeline would silently and permanently
 /// consume them.
+///
+/// Documents are independent, so they are processed in parallel on the current rayon pool;
+/// the results are then folded in input order, giving the same documents, counts and (first)
+/// invalid samples as a serial loop.
 fn prepare_docs(
     docs: Vec<JsonValue>,
     mapped_fields: &HashSet<String>,
     mapper: &DocMapper,
 ) -> PreparedDocs {
+    struct Prepared {
+        bytes: Bytes,
+        /// `sentence_id: error` when the doc mapping rejects the document.
+        rejection: Option<String>,
+        unmapped: Vec<String>,
+    }
+
+    let outcomes: Vec<Prepared> = docs
+        .into_par_iter()
+        .map(|mut doc| {
+            let mut unmapped = Vec::new();
+            if let JsonValue::Object(map) = &mut doc {
+                map.retain(|key, _| {
+                    let keep = mapped_fields.contains(key);
+                    if !keep {
+                        unmapped.push(key.clone());
+                    }
+                    keep
+                });
+            }
+            let bytes = Bytes::from(serde_json::to_vec(&doc).expect("Value serializes"));
+            let rejection = mapper.doc_from_json_bytes(&bytes).err().map(|err| {
+                let id = doc
+                    .get("sentence_id")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("?");
+                format!("{id}: {err}")
+            });
+            Prepared {
+                bytes,
+                rejection,
+                unmapped,
+            }
+        })
+        .collect();
+
     let mut prepared = PreparedDocs {
-        docs: Vec::with_capacity(docs.len()),
+        docs: Vec::with_capacity(outcomes.len()),
         num_invalid: 0,
         invalid_sample: Vec::new(),
         unmapped_fields: BTreeSet::new(),
+        validate: Duration::ZERO,
+        partition: String::new(),
+        partition_hash: Duration::ZERO,
     };
-    for mut doc in docs {
-        if let JsonValue::Object(map) = &mut doc {
-            map.retain(|key, _| {
-                let keep = mapped_fields.contains(key);
-                if !keep {
-                    prepared.unmapped_fields.insert(key.clone());
-                }
-                keep
-            });
-        }
-        let bytes = Bytes::from(serde_json::to_vec(&doc).expect("Value serializes"));
-        match mapper.doc_from_json_bytes(&bytes) {
-            Ok(_) => prepared.docs.push(bytes),
-            Err(err) => {
+    for outcome in outcomes {
+        prepared.unmapped_fields.extend(outcome.unmapped);
+        match outcome.rejection {
+            None => prepared.docs.push(outcome.bytes),
+            Some(message) => {
                 prepared.num_invalid += 1;
                 if prepared.invalid_sample.len() < MAX_INVALID_SAMPLES {
-                    let id = doc
-                        .get("sentence_id")
-                        .and_then(JsonValue::as_str)
-                        .unwrap_or("?");
-                    prepared.invalid_sample.push(format!("{id}: {err}"));
+                    prepared.invalid_sample.push(message);
                 }
             }
         }
@@ -722,6 +887,67 @@ mod tests {
         );
         let kept: JsonValue = serde_json::from_slice(&prepared.docs[0]).unwrap();
         assert!(kept.get("extra1").is_none() && kept.get("norm").is_some());
+    }
+
+    #[test]
+    fn parallel_prepare_equals_serial_in_any_pool_size() {
+        let opts = IndexerOptions::for_bucket("b");
+        let config = build_index_config(&opts).unwrap();
+        let mapper = build_doc_mapper(&config.doc_mapping, &config.search_settings).unwrap();
+        let mapped: HashSet<String> = config
+            .doc_mapping
+            .field_mappings
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+
+        let docs: Vec<JsonValue> = (0..3000)
+            .map(|i| match i % 7 {
+                // Rejected by the mapping (wrong type), in several places of the batch.
+                3 => serde_json::json!({
+                    "doc_id": "d", "sentence_id": format!("bad_{i}"), "sentence_length": "many"
+                }),
+                // Valid, with fields the mapping does not declare.
+                5 => serde_json::json!({
+                    "doc_id": "d", "sentence_id": format!("s_{i}"), "sentence_length": 2,
+                    "word": "a|b", "extra_a": i, "norm_extra": "x"
+                }),
+                _ => serde_json::json!({
+                    "doc_id": "d", "sentence_id": format!("s_{i}"), "sentence_length": 2,
+                    "word": "a|b"
+                }),
+            })
+            .collect();
+
+        let run = |threads: usize| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            prepare_docs_on(&pool, docs.clone(), &mapped, &mapper)
+        };
+        let serial = run(1);
+        let expected_invalid = (0..3000).filter(|i| i % 7 == 3).count() as u64;
+        assert_eq!(serial.num_invalid, expected_invalid);
+        assert_eq!(serial.docs.len() as u64, 3000 - expected_invalid);
+        assert_eq!(serial.invalid_sample.len(), MAX_INVALID_SAMPLES);
+        assert!(serial.invalid_sample[0].starts_with("bad_3:"));
+        assert!(serial.invalid_sample[1].starts_with("bad_10:"));
+        assert_eq!(
+            serial.unmapped_fields.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["extra_a", "norm_extra"]
+        );
+        for threads in [2, 5, 16] {
+            let parallel = run(threads);
+            assert_eq!(parallel.docs, serial.docs, "{threads} threads: docs and their order");
+            assert_eq!(parallel.num_invalid, serial.num_invalid);
+            assert_eq!(parallel.invalid_sample, serial.invalid_sample, "first samples, in order");
+            assert_eq!(parallel.unmapped_fields, serial.unmapped_fields);
+            // The checkpoint identity of the batch is unchanged, and computed with the batch.
+            assert_eq!(content_partition(&parallel.docs), content_partition(&serial.docs));
+            assert_eq!(parallel.partition, content_partition(&parallel.docs));
+            assert_eq!(parallel.partition, serial.partition);
+        }
     }
 
     #[test]

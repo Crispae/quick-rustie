@@ -83,5 +83,8 @@ doc_mapping:
       pattern: "[^|]+"
       filters: []
 
+indexing_settings:
+  split_num_docs_target: 500000
+
 search_settings:
   default_search_fields: [word]

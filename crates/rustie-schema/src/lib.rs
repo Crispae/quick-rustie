@@ -30,6 +30,7 @@ pub use flatten::{flatten_document, flatten_odinson_json};
 pub use graph::{DependencyEdge, SentenceGraph, DEFAULT_BASIC_GRAPH_FIELD, DEFAULT_GRAPH_FIELD};
 pub use mapping::{
     postings_doc_mapping_yaml, postings_index_config_yaml, IndexConfigOptions,
+    DEFAULT_SPLIT_NUM_DOCS_TARGET,
     PostingsMappingOptions,
 };
 pub use odinson::{

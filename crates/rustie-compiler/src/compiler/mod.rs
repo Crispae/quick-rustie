@@ -98,6 +98,43 @@ mod tests {
         }
     }
 
+    fn is_exact(query: &str) -> bool {
+        match QueryCompiler::new().compile(query).unwrap() {
+            CompiledQuery::Surface(plan) => plan.exact,
+            CompiledQuery::Graph(_) => false,
+        }
+    }
+
+    #[test]
+    fn exactness_of_the_candidate_filter() {
+        // One token test, or alternatives of them: the postings decide.
+        for query in [
+            "[word=cat]",
+            "[tag=/NN.*/]",
+            "[tag=/NN|VBD/]",
+            "[word=cat | word=dog]",
+            "[word=cat | tag=/V.*/]",
+            "(?<x> [word=cat])",
+        ] {
+            assert!(is_exact(query), "{query}");
+        }
+        // Position-dependent, approximated, or not a single token test: the matcher decides.
+        for query in [
+            "[word=cat] [word=sat]",
+            "[word=cat] [tag=NN]",
+            "[word=cat]+",
+            "[word=cat]{2,}",
+            "[word=cat & tag=NN]",
+            "[word=cat~]",
+            "[!word=cat]",
+            "[]",
+            "[word=cat | !tag=NN]",
+            "[word=cat] >nsubj []",
+        ] {
+            assert!(!is_exact(query), "{query}");
+        }
+    }
+
     #[test]
     fn graph_traversal() {
         let c = QueryCompiler::new()

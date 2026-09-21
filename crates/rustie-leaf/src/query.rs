@@ -8,12 +8,14 @@
 //!    (graph patterns).
 //!
 //! The scorer (synchronous, on that local data) then walks the candidates and yields only the
-//! documents the pattern matches exactly.
+//! documents the pattern matches exactly. When the postings already decide the match (one token
+//! test, or alternatives of them), steps 3 and 4 are skipped and the candidates are the answer.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use lru::LruCache;
@@ -25,6 +27,7 @@ use rustie_compiler::{
 use rustie_graph_store::reader::Gph2Block;
 use rustie_graph_store::{BLOCK_DOCS, SentenceScratch};
 use serde_json::Value as JsonValue;
+use tracing::debug;
 use tantivy::columnar::Column;
 use tantivy::directory::Directory;
 use tantivy::index::SegmentId;
@@ -65,6 +68,8 @@ impl PatternPayload {
 /// A compiled pattern, shared by every split a query touches.
 struct Compiled {
     compiled: CompiledQuery,
+    /// The candidate filter is the answer (see `SurfacePlan::exact`): no per-sentence check.
+    exact: bool,
     /// Bound once: token patterns do not depend on the split.
     surface: Option<BoundSurface>,
 }
@@ -100,7 +105,12 @@ impl RustieQueryExtension {
             CompiledQuery::Surface(plan) => Some(BoundSurface::bind(&plan.pattern)?),
             CompiledQuery::Graph(_) => None,
         };
-        let compiled = Arc::new(Compiled { compiled, surface });
+        let exact = matches!(&compiled, CompiledQuery::Surface(plan) if plan.exact);
+        let compiled = Arc::new(Compiled {
+            compiled,
+            exact,
+            surface,
+        });
         self.compiled
             .lock()
             .expect("poisoned")
@@ -210,9 +220,19 @@ impl RustieWarmup {
         reader: &SegmentReader,
         graph: Option<&SplitGraph>,
     ) -> anyhow::Result<SegmentPlan> {
+        let started = Instant::now();
         let candidates = candidate_docs(self.compiled.candidate(), reader, &self.schema)
             .await?
             .docs();
+        let candidates_took = started.elapsed();
+        if self.compiled.exact {
+            // Neither positions nor sentence lengths are read.
+            return Ok(SegmentPlan {
+                candidates,
+                leaf_terms: Vec::new(),
+                graph: None,
+            });
+        }
         let (leaves, graph_segment) = match (&self.compiled.compiled, graph) {
             (CompiledQuery::Surface(_), _) => (
                 self.compiled
@@ -256,6 +276,7 @@ impl RustieWarmup {
             leaf_terms.push(terms);
         }
 
+        let leaves_took = started.elapsed() - candidates_took;
         let graph = match (graph_segment, graph) {
             (Some(plan), Some(graph)) => Some(GraphSegment {
                 plan,
@@ -267,6 +288,14 @@ impl RustieWarmup {
                 None
             }
         };
+        debug!(
+            segment = %reader.segment_id().short_uuid_string(),
+            candidates = candidates.len(),
+            candidates_ms = candidates_took.as_millis() as u64,
+            leaves_ms = leaves_took.as_millis() as u64,
+            graph_ms = (started.elapsed() - candidates_took - leaves_took).as_millis() as u64,
+            "rustie segment warmed"
+        );
         Ok(SegmentPlan {
             candidates,
             leaf_terms,
@@ -397,7 +426,7 @@ impl RustieScorer {
             postings.push(leaf_postings);
         }
         let lengths = match plan.graph {
-            None if !plan.candidates.is_empty() => {
+            None if !compiled.exact && !plan.candidates.is_empty() => {
                 Some(reader.fast_fields().u64(SENTENCE_LENGTH_FIELD)?)
             }
             _ => None,
@@ -421,7 +450,7 @@ impl RustieScorer {
     fn next_match(&mut self) -> DocId {
         while let Some(&doc) = self.plan.candidates.get(self.cursor) {
             self.cursor += 1;
-            if self.matches(doc) {
+            if self.compiled.exact || self.matches(doc) {
                 return doc;
             }
         }

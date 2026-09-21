@@ -180,6 +180,7 @@ impl SplitGraph {
         } else {
             self.coalesce(&missing)
         };
+        let started = std::time::Instant::now();
         let fetched: Vec<(Range<usize>, Vec<u32>, tantivy::directory::OwnedBytes)> =
             futures::stream::iter(requests.into_iter().map(|(range, blocks)| async move {
                 let bytes = self
@@ -193,6 +194,8 @@ impl SplitGraph {
             .try_collect()
             .await?;
 
+        let fetch_took = started.elapsed();
+        let fetched_bytes: usize = fetched.iter().map(|(range, ..)| range.len()).sum();
         let body = |range: &Range<usize>, owned: &tantivy::directory::OwnedBytes| {
             Bytes::from_owner(owned.clone()).slice(0..range.len())
         };
@@ -214,6 +217,15 @@ impl SplitGraph {
                 found.insert(block, parsed);
             }
         }
+        tracing::debug!(
+            wanted = wanted.len(),
+            missing = missing.len(),
+            n_blocks,
+            fetched_mib = fetched_bytes >> 20,
+            fetch_ms = fetch_took.as_millis() as u64,
+            parse_ms = (started.elapsed() - fetch_took).as_millis() as u64,
+            "graph blocks loaded"
+        );
         Ok(found)
     }
 

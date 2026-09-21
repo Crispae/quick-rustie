@@ -64,6 +64,10 @@ redirected to it, at a pinned commit, by the `[patch]` section of the root `Carg
   only membership is useful for candidates; the graph itself is in GPH2.
 - **The stored document keeps its tokens and graph JSON** so a page can be rendered without a
   second graph read. Only the returned page is rendered.
+- **Postings decide simple token patterns.** One token test (or alternatives) on a field needs no
+  per-sentence check: the compiler marks the plan `exact` and the leaf returns the candidates.
+- **Split size caps parallelism.** One thread searches a split, so the index config bounds splits
+  at 500k documents (`split_num_docs_target`) instead of Quickwit's 10M default.
 - **Sentence length** is a fast field, read for token patterns (wildcards, negation, look-arounds
   need it); graph patterns get it from GPH2.
 

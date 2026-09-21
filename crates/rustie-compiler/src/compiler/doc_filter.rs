@@ -114,6 +114,45 @@ impl DocFilter {
     }
 }
 
+impl DocFilter {
+    /// Whether the documents admitted by [`Self::for_pattern`] are exactly the documents the
+    /// pattern matches, so no per-sentence check is needed.
+    ///
+    /// True for one token test on one field (a literal, or a regex the filter compiles from the
+    /// very source the matcher uses) and for alternatives of such tests: a sentence matches iff
+    /// some token satisfies the test iff some accepted term occurs in it. Everything that
+    /// constrains *where* tokens sit (sequences, phrases, quantifiers, several tests on one
+    /// token) or that the filter only approximates (fuzzy, conjunctions, negation) needs the
+    /// exact matcher.
+    pub(crate) fn decides_match(pattern: &Pattern) -> bool {
+        match pattern {
+            Pattern::NamedCapture { pattern, .. } => Self::decides_match(pattern),
+            Pattern::Constraint(c) => Self::constraint_decides_match(c),
+            _ => false,
+        }
+    }
+
+    fn constraint_decides_match(constraint: &Constraint) -> bool {
+        match constraint {
+            Constraint::Field { matcher, .. } => match matcher {
+                Matcher::String(_) => true,
+                // `field_filter` trims slashes before compiling; only when that changes
+                // nothing is the filter's regex the matcher's regex.
+                Matcher::Regex { pattern, .. } => {
+                    pattern == pattern.trim_start_matches('/').trim_end_matches('/')
+                }
+            },
+            Constraint::Disjunctive(inner) => {
+                !inner.is_empty() && inner.iter().all(Self::constraint_decides_match)
+            }
+            Constraint::Wildcard
+            | Constraint::Negated(_)
+            | Constraint::Fuzzy { .. }
+            | Constraint::Conjunctive(_) => false,
+        }
+    }
+}
+
 fn is_simple_literal(pattern: &str) -> bool {
     pattern
         .chars()

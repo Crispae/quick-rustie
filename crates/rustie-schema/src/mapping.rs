@@ -41,6 +41,14 @@ impl Default for PostingsMappingOptions {
     }
 }
 
+/// Documents per split above which Quickwit stops merging it.
+///
+/// Quickwit's own default is 10M, which merges a corpus of a few million sentences into a single
+/// split. A split is searched by one thread, so that caps a query at one core; splits of about
+/// this size keep every core of a search node busy while still amortising per-split costs
+/// (dictionary, hotcache, graph trailer). A merged split ends up between one and two times this.
+pub const DEFAULT_SPLIT_NUM_DOCS_TARGET: usize = 500_000;
+
 /// Full Quickwit index config options.
 #[derive(Debug, Clone)]
 pub struct IndexConfigOptions {
@@ -51,6 +59,8 @@ pub struct IndexConfigOptions {
     /// fields with at most 1000 distinct values per split, and a split of sentences has far
     /// more distinct documents, so the tag is never registered and only costs work.
     pub tag_doc_id: bool,
+    /// Splits with at least this many documents are mature and never merged again.
+    pub split_num_docs_target: usize,
 }
 
 impl Default for IndexConfigOptions {
@@ -60,6 +70,7 @@ impl Default for IndexConfigOptions {
             index_uri: "s3://rustie-dev/indexes/ie-postings".into(),
             mapping: PostingsMappingOptions::default(),
             tag_doc_id: false,
+            split_num_docs_target: DEFAULT_SPLIT_NUM_DOCS_TARGET,
         }
     }
 }
@@ -160,6 +171,12 @@ pub fn postings_index_config_yaml(opts: &IndexConfigOptions) -> String {
     push_field_mappings_body(&mut lines, &opts.mapping);
     push_tokenizer(&mut lines);
     lines.push(String::new());
+    lines.push("indexing_settings:".to_string());
+    lines.push(format!(
+        "  split_num_docs_target: {}",
+        opts.split_num_docs_target
+    ));
+    lines.push(String::new());
     lines.push("search_settings:".to_string());
     lines.push("  default_search_fields: [word]".to_string());
     lines.push(String::new());
@@ -180,5 +197,25 @@ mod tests {
         assert!(yaml.contains("dependencies_basic"));
         assert!(yaml.contains("type: json"));
         let _: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("valid yaml");
+    }
+
+    #[test]
+    fn yaml_caps_split_size() {
+        let yaml = postings_index_config_yaml(&IndexConfigOptions {
+            split_num_docs_target: 123_456,
+            ..Default::default()
+        });
+        let config: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            config["indexing_settings"]["split_num_docs_target"].as_u64(),
+            Some(123_456)
+        );
+        let default: serde_yaml::Value =
+            serde_yaml::from_str(&postings_index_config_yaml(&IndexConfigOptions::default()))
+                .unwrap();
+        assert_eq!(
+            default["indexing_settings"]["split_num_docs_target"].as_u64(),
+            Some(DEFAULT_SPLIT_NUM_DOCS_TARGET as u64)
+        );
     }
 }

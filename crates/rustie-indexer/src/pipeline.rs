@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use quickwit_actors::{ActorHandle, Mailbox, Universe};
@@ -31,6 +31,17 @@ use quickwit_storage::StorageResolver;
 use tracing::{info, warn};
 
 use crate::error::{IndexerError, Result};
+
+/// Outcome of one [`PipelineRuntime::run_source`].
+pub(crate) struct SourceRun {
+    pub statistics: IndexingStatistics,
+    /// Time to spawn the pipeline and detach its handles, before indexing starts.
+    pub spawn: Duration,
+    /// Time until the source was exhausted and its splits published.
+    pub indexing: Duration,
+    /// Time spent afterwards letting merges finish.
+    pub merge_drain: Duration,
+}
 
 /// Owns the actor system for the lifetime of an [`Indexer`](crate::Indexer).
 pub(crate) struct PipelineRuntime {
@@ -85,7 +96,8 @@ impl PipelineRuntime {
         &self,
         index_id: &str,
         source_config: SourceConfig,
-    ) -> Result<IndexingStatistics> {
+    ) -> Result<SourceRun> {
+        let spawn_started = Instant::now();
         let pipeline_id = self
             .service
             .ask_for_res(SpawnPipeline {
@@ -108,7 +120,10 @@ impl PipelineRuntime {
             .await
             .map_err(|err| IndexerError::Pipeline(format!("failed to detach pipeline: {err}")))?;
 
+        let spawn = spawn_started.elapsed();
+        let started = Instant::now();
         let (exit_status, statistics) = indexing_handle.join().await;
+        let indexing = started.elapsed();
 
         // Drain merges on the failure path too: a half-finished merge would otherwise be
         // left staged in the metastore until the next janitor pass.
@@ -120,13 +135,19 @@ impl PipelineRuntime {
             warn!(%err, "merge pipeline did not acknowledge shutdown request");
         }
         merge_handle.join().await;
+        let merge_drain = started.elapsed() - indexing;
 
         if !exit_status.is_success() {
             return Err(IndexerError::Pipeline(format!(
                 "pipeline exited with {exit_status:?}"
             )));
         }
-        Ok(statistics)
+        Ok(SourceRun {
+            statistics,
+            spawn,
+            indexing,
+            merge_drain,
+        })
     }
 
     pub(crate) async fn shutdown(self) {

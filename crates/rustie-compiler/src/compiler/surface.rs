@@ -11,6 +11,9 @@ use rustie_query::Pattern;
 pub struct SurfacePlan {
     pub candidate: CandidateFilter,
     pub pattern: Pattern,
+    /// The candidate filter admits exactly the matching sentences: executors may skip the
+    /// per-sentence check (see [`DocFilter::decides_match`]).
+    pub exact: bool,
 }
 
 pub struct SurfaceCompiler;
@@ -28,6 +31,7 @@ impl SurfaceCompiler {
         Ok(CompiledQuery::Surface(SurfacePlan {
             candidate,
             pattern: pattern.clone(),
+            exact: DocFilter::decides_match(pattern),
         }))
     }
 }

@@ -13,6 +13,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use rustie_indexer::{Indexer, IndexerOptions, InvalidDocPolicy, MinioConfig};
+use rustie_schema::DEFAULT_SPLIT_NUM_DOCS_TARGET;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -63,6 +64,16 @@ struct Args {
     /// Scratch directory for split building. Default: a temporary directory.
     #[arg(long)]
     data_dir: Option<PathBuf>,
+
+    /// Splits reaching this many documents are never merged again (applies when the index is
+    /// created; use --overwrite to change it). Smaller splits are searched in parallel.
+    #[arg(long, default_value_t = DEFAULT_SPLIT_NUM_DOCS_TARGET)]
+    split_num_docs_target: usize,
+
+    /// Threads reading, decompressing, flattening and validating input (0 = one per core,
+    /// 1 = serial). Indexing itself is not affected.
+    #[arg(long, default_value_t = 0)]
+    threads: usize,
 
     /// Drop documents the index mapping rejects instead of aborting the run.
     #[arg(long)]
@@ -130,6 +141,8 @@ async fn run(args: Args) -> anyhow::Result<ExitCode> {
     let mut options = IndexerOptions::for_bucket(&minio.bucket);
     options.index_id = args.index_id;
     options.data_dir = args.data_dir;
+    options.split_num_docs_target = args.split_num_docs_target;
+    options.threads = args.threads;
     if args.skip_invalid {
         options.on_invalid_doc = InvalidDocPolicy::Skip;
     }
@@ -184,6 +197,18 @@ async fn run(args: Args) -> anyhow::Result<ExitCode> {
         stats.splits_published,
         stats.batches,
         stats.batches_already_indexed,
+    );
+    let t = &stats.timings;
+    eprintln!(
+        "time (s): read {:.1} + validate {:.1} + batch hash {:.1} (in parallel with indexing) | \
+         spawn {:.1} | indexing {:.1} | waiting on merges {:.1} | idle waiting for input {:.1}",
+        t.flatten.as_secs_f64(),
+        t.validate.as_secs_f64(),
+        t.partition_hash.as_secs_f64(),
+        t.spawn.as_secs_f64(),
+        t.indexing.as_secs_f64(),
+        t.merge_drain.as_secs_f64(),
+        t.input_wait.as_secs_f64(),
     );
     eprintln!(
         "index `{}` now has {} published split(s), {} docs",

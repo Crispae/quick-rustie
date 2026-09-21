@@ -25,12 +25,14 @@ cargo run --release -p rustie-indexer --bin rustie-index -- --data "data/process
 
 | Flag | Default | |
 | --- | --- | --- |
-| `--data` | required | directory of Odinson `*.json` (recursive) |
+| `--data` | required | directory of Odinson `*.json` / `*.json.gz` (recursive) |
 | `--limit` | – | max files (smoke runs) |
 | `--batch-size` | 200 | files per pipeline run (≈ one split before merges) |
 | `--endpoint` / `--bucket` / `--access-key` / `--secret-key` | `MINIO_*` env, else local `rustie-minio` | prefer env for the secret |
 | `--index-id` | `ie-postings` | |
 | `--metastore-uri` / `--index-root-uri` | `s3://<bucket>/metastore`, `s3://<bucket>/indexes` | |
+| `--threads` | 0 (all cores) | threads reading, decompressing, flattening and validating input; `1` = serial. Batch content, order and checkpoints are identical for any value |
+| `--split-num-docs-target` | 500000 | splits at or above this many documents are never merged again; applies when the index is created (`--overwrite` to change) |
 | `--data-dir` | temp dir | scratch for split building |
 | `--skip-invalid` | off | drop documents the mapping rejects instead of aborting |
 | `--overwrite` | off | **deletes** the index and re-creates it first (needed after a mapping change) |
@@ -72,6 +74,30 @@ indexer.shutdown().await;
   them permanently. Documents are therefore validated against the doc mapper first; by default a
   rejected document aborts the run before its batch is submitted (`--skip-invalid` to drop instead).
   Files that fail to parse as Odinson are skipped and listed.
+- **Split size = search parallelism.** A split is searched by one thread. Quickwit merges up to
+  10M documents by default, which turns a few-million-sentence corpus into one split and one busy
+  core; the index config caps it at 500k (`--split-num-docs-target`), giving splits of 0.5–1M
+  documents. On 5.1M PubMed sentences that gave 10 splits and 1.3–4.5× faster graph queries than
+  one 3.9M-document split. Smaller targets (more splits than cores helps little) trade per-split
+  overhead for parallelism.
+- **Batch size decides the merge tax.** A batch becomes its own pipeline run. Batches much smaller
+  than `--split-num-docs-target` yield small splits that Quickwit then re-merges up to the target,
+  and each run waits for its merges to finish. Batches of about the target size yield splits that
+  are already mature and never merged: on 1.49M PubMed sentences, 5,000-file batches took 214 s
+  (62 s waiting on merges) and 67,000-file batches (≈ 500k sentences, 7.5 per file) about 145 s
+  with no merge wait. Pick `--batch-size ≈ target / sentences-per-file`. A batch is all-or-nothing
+  (checkpoint per batch), so an interrupt loses at most one batch of work, and it is held in
+  memory: 500k sentences peak at about 7 GB with the fork's vec-source fix (rev containing
+  `fix(indexing): create the vec source from its typed params`), about 17 GB without it.
+- **Where indexing time goes.** Input preparation (read, gunzip, flatten, validate, hash) runs on
+  `--threads` threads and two batches ahead of the pipeline, so it is hidden (14 s serial vs 1.4 s
+  parallel on a 240k-sentence sample). What remains is Quickwit's pipeline (one indexing thread per
+  pipeline: about 2 of 20 cores in use). Stock Quickwit also spends about 25 µs per document
+  spawning a vec-source pipeline (it round-trips the documents through JSON); the fork fixes that.
+  The run's final line reports the breakdown. Merges are not overlapped with the next batch:
+  Quickwit shuts a merge pipeline down when no indexing pipeline is attached, so the next batch
+  could plan splits still being merged (the metastore rejects the stale publish atomically, so it
+  costs work, not correctness). Mature splits make this moot.
 - **Single writer.** The file-backed metastore on S3 assumes one writer per metastore URI; do not run
   two indexers against the same metastore concurrently.
 
