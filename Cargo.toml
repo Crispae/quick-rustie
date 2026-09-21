@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/rustie-query", "crates/rustie-schema", "crates/rustie-compiler", "crates/rustie-indexer", "crates/rustie-search"]
+members = [".", "crates/rustie-query", "crates/rustie-schema", "crates/rustie-compiler", "crates/rustie-indexer", "crates/rustie-search", "crates/rustie-graph-store", "crates/rustie-leaf"]
 
 [package]
 name = "quick_rustie"
@@ -42,3 +42,31 @@ tokio = { version = "=1.52.3", features = ["full"] }
 [[example]]
 name = "minio_ping"
 path = "examples/minio_ping.rs"
+
+# Quickwit fork (sibling checkout `../quickwit-fork`, branch `rustie-ext`, based on cc420c3) with the generic extension hooks RustIE
+# needs. Every quickwit crate in the dependency graph must be patched, otherwise cargo would mix
+# fork and upstream types. See docs/rustie-fork.md.
+[patch."https://github.com/quickwit-oss/quickwit.git"]
+quickwit-actors = { path = "../quickwit-fork/quickwit/quickwit-actors" }
+quickwit-aws = { path = "../quickwit-fork/quickwit/quickwit-aws" }
+quickwit-cluster = { path = "../quickwit-fork/quickwit/quickwit-cluster" }
+quickwit-codegen = { path = "../quickwit-fork/quickwit/quickwit-codegen" }
+quickwit-common = { path = "../quickwit-fork/quickwit/quickwit-common" }
+quickwit-config = { path = "../quickwit-fork/quickwit/quickwit-config" }
+quickwit-datetime = { path = "../quickwit-fork/quickwit/quickwit-datetime" }
+quickwit-directories = { path = "../quickwit-fork/quickwit/quickwit-directories" }
+quickwit-doc-mapper = { path = "../quickwit-fork/quickwit/quickwit-doc-mapper" }
+quickwit-dst = { path = "../quickwit-fork/quickwit/quickwit-dst" }
+quickwit-index-management = { path = "../quickwit-fork/quickwit/quickwit-index-management" }
+quickwit-indexing = { path = "../quickwit-fork/quickwit/quickwit-indexing" }
+quickwit-ingest = { path = "../quickwit-fork/quickwit/quickwit-ingest" }
+quickwit-macros = { path = "../quickwit-fork/quickwit/quickwit-macros" }
+quickwit-metastore = { path = "../quickwit-fork/quickwit/quickwit-metastore" }
+quickwit-metrics = { path = "../quickwit-fork/quickwit/quickwit-metrics" }
+quickwit-opentelemetry = { path = "../quickwit-fork/quickwit/quickwit-opentelemetry" }
+quickwit-parquet-engine = { path = "../quickwit-fork/quickwit/quickwit-parquet-engine" }
+quickwit-proto = { path = "../quickwit-fork/quickwit/quickwit-proto" }
+quickwit-query = { path = "../quickwit-fork/quickwit/quickwit-query" }
+quickwit-search = { path = "../quickwit-fork/quickwit/quickwit-search" }
+quickwit-storage = { path = "../quickwit-fork/quickwit/quickwit-storage" }
+quickwit-transport = { path = "../quickwit-fork/quickwit/quickwit-transport" }

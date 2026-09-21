@@ -5,7 +5,7 @@
 //! | `GET /health` | liveness |
 //! | `GET /v1/index` | published splits / docs from the metastore |
 //! | `POST /v1/search` | JSON body [`SearchQuery`] |
-//! | `GET /v1/search?q=…&limit=…&cursor=…&max_candidates=…&count=…` | same, for curl / browsers |
+//! | `GET /v1/search?q=…&limit=…&cursor=…&count=…` | same, for curl / browsers |
 //!
 //! There is no authentication: bind to loopback or put it behind a proxy.
 
@@ -78,7 +78,6 @@ struct SearchParams {
     q: String,
     limit: Option<usize>,
     cursor: Option<String>,
-    max_candidates: Option<usize>,
     #[serde(default)]
     count: bool,
 }
@@ -93,7 +92,6 @@ async fn search_get(
             query: params.q,
             limit: params.limit,
             cursor: params.cursor,
-            max_candidates: params.max_candidates,
             count: params.count,
         },
     )

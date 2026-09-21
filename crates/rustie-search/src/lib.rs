@@ -1,9 +1,9 @@
 //! Run RustIE / Odinson patterns against the IE postings index on Quickwit.
 //!
-//! A query is compiled by `rustie-compiler` into (1) a Quickwit **prefilter** — a superset of
-//! the matching sentences, evaluated by the index — and (2) an exact in-memory matcher that
-//! runs on the stored tokens and dependency graph of each candidate. Only sentences that
-//! survive step 2 are returned, with the matched spans and named captures.
+//! A query runs as one Quickwit search in which every split matches the pattern exactly (token
+//! positions from its postings, dependency graph from its GPH2 component; see `rustie-leaf`), so
+//! only matching sentences are counted, ranked and fetched. The page's matched spans and named
+//! captures are then rendered from the stored sentences.
 //!
 //! ```no_run
 //! # async fn demo() -> rustie_search::Result<()> {
@@ -26,7 +26,6 @@ mod cursor;
 mod error;
 mod eval;
 mod model;
-mod prefilter;
 pub mod searcher;
 pub mod server;
 

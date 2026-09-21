@@ -5,6 +5,7 @@ use crate::compiler::doc_filter::DocFilter;
 use crate::error::Result;
 use crate::graph::nfa::{Dir, LabelPred};
 use crate::graph::plan::{compile_plan, GraphPlanSpec};
+use crate::graph::require::{first_is_strict, last_is_strict};
 use rustie_query::{Constraint, FlatPatternStep, Matcher, Pattern, Traversal};
 
 /// Compiled graph query: Quickwit prefilter + in-memory [`GraphPlanSpec`].
@@ -232,11 +233,33 @@ impl GraphCompiler {
             }
         }
 
-        // Hop first/last strict labels as edge postings.
+        // Every path of a hop starts with one of its first-set transitions and ends with one of
+        // its last-set transitions, so a sentence must carry at least one label of each set. Only
+        // sound when the hop cannot be empty and no transition is a wildcard.
         for req in &plan.hop_reqs {
-            for (dir, pred) in req.first.iter().chain(req.last.iter()) {
-                if let Some(f) = label_pred_filter(*dir, pred) {
-                    parts.push(f);
+            let sides = [
+                (first_is_strict(req), &req.first, false),
+                (last_is_strict(req), &req.last, true),
+            ];
+            for (strict, side, arrives) in sides {
+                if !strict {
+                    continue;
+                }
+                let alternatives: Vec<CandidateFilter> = side
+                    .iter()
+                    .filter_map(|(dir, pred)| {
+                        // The last transition arrives at the endpoint: seen from the endpoint, an
+                        // outgoing hop is an incoming edge.
+                        let dir = match (arrives, dir) {
+                            (true, Dir::Out) => Dir::In,
+                            (true, Dir::In) => Dir::Out,
+                            (false, dir) => *dir,
+                        };
+                        label_pred_filter(dir, pred)
+                    })
+                    .collect();
+                if alternatives.len() == side.len() {
+                    parts.push(CandidateFilter::Or(alternatives));
                 }
             }
         }
@@ -365,6 +388,39 @@ mod tests {
         );
         assert_eq!(compiled.plan.nodes.len(), 2);
         assert_eq!(compiled.plan.hops.len(), 1);
+    }
+
+    fn candidate(q: &str) -> CandidateFilter {
+        let pattern = QueryParser::new().parse_query(q).unwrap();
+        GraphCompiler
+            .compile_graph_traversal(&pattern)
+            .unwrap()
+            .candidate
+    }
+
+    #[test]
+    fn label_alternatives_require_any_one_label() {
+        let q = candidate("[] >nsubj|dobj []").to_quickwit_query();
+        assert!(q.contains("nsubj OR "), "{q}");
+        assert!(
+            !q.contains("outgoing_edges:nsubj AND outgoing_edges:dobj"),
+            "{q}"
+        );
+    }
+
+    #[test]
+    fn hops_that_may_be_empty_require_no_label() {
+        for q in ["[word=a] >advmod? [word=b]", "[word=a] >det* [word=b]"] {
+            let filter = candidate(q).to_quickwit_query();
+            assert!(
+                !filter.contains("advmod") && !filter.contains("det"),
+                "{q}: {filter}"
+            );
+        }
+        // `+` still requires a label.
+        assert!(candidate("[word=a] >det+ [word=b]")
+            .to_quickwit_query()
+            .contains("det"));
     }
 
     #[test]

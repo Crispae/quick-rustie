@@ -1,10 +1,8 @@
-//! [`Searcher`]: RustIE pattern → Quickwit prefilter → in-memory exact evaluation.
+//! [`Searcher`]: a RustIE pattern as one Quickwit search.
 //!
-//! Quickwit is the storage and candidate engine (splits on S3, its caches, its metastore); the
-//! exact RustIE semantics (sequences, gaps, captures, graph traversal) run here on the stored
-//! tokens and dependency graph of each candidate. Quickwit has no plug-in point for custom
-//! scorers, so matching cannot run inside its leaf search; the prefilter is what keeps the
-//! number of candidates fetched small.
+//! The pattern travels as a `rustie` extension query and is matched exactly inside each split
+//! (see `rustie-leaf`): only matching sentences are counted, ranked and fetched. This process
+//! then renders the matched spans of the returned page from the stored sentences.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -13,6 +11,7 @@ use std::time::{Duration, Instant};
 use quickwit_config::SearcherConfig;
 use quickwit_proto::metastore::MetastoreServiceClient;
 use quickwit_proto::search::{CountHits, PartialHit, SearchRequest};
+use quickwit_query::query_ast::{ExtensionQuery, QueryAst};
 use quickwit_search::{
     ClusterClient, SearchJobPlacer, SearchServiceClient, SearchServiceImpl, SearcherContext,
     SearcherPool, root_search,
@@ -20,26 +19,22 @@ use quickwit_search::{
 use quickwit_storage::StorageResolver;
 use rustie_compiler::{CompiledQuery, QueryCompiler};
 use rustie_indexer::{IndexSummary, IndexerOptions, MinioConfig, index_summary, open_metastore};
+use rustie_leaf::PatternPayload;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::cursor;
 use crate::error::{Result, SearchError};
 use crate::eval::{Evaluator, StoredSentence};
 use crate::model::{QueryKind, SearchQuery, SearchResults, Timing};
-use crate::prefilter;
 
 /// Where the index lives and the resource limits applied to every query.
 #[derive(Debug, Clone)]
 pub struct SearcherOptions {
     pub index_id: String,
     pub metastore_uri: String,
-    /// Candidate sentences fetched from Quickwit per round trip.
-    pub page_size: usize,
     /// Hard cap on `limit` (default 1 000).
     pub max_limit: usize,
-    /// Hard cap on candidates examined per query (default 200 000).
-    pub max_candidates: usize,
     /// Wall-clock budget per query.
     pub timeout: Duration,
 }
@@ -50,9 +45,7 @@ impl SearcherOptions {
         Self {
             index_id: indexer.index_id,
             metastore_uri: indexer.metastore_uri,
-            page_size: 200,
             max_limit: 1_000,
-            max_candidates: 200_000,
             timeout: Duration::from_secs(30),
         }
     }
@@ -60,11 +53,6 @@ impl SearcherOptions {
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_QUERY_CHARS: usize = 10_000;
-/// Candidates fetched by the first round trip, as a multiple of the requested `limit`.
-/// Later round trips double up to `page_size`: selective prefilters stay cheap, unselective
-/// ones stop paying a round trip per handful of candidates.
-const FIRST_PAGE_FACTOR: usize = 4;
-const MIN_FIRST_PAGE: usize = 32;
 
 /// Read-only handle on the index; cheap to share behind an `Arc`.
 pub struct Searcher {
@@ -111,11 +99,11 @@ impl Stack {
 
 impl Searcher {
     pub async fn connect(minio: MinioConfig, options: SearcherOptions) -> Result<Self> {
-        if options.page_size == 0 || options.max_limit == 0 || options.max_candidates == 0 {
-            return Err(SearchError::InvalidQuery(
-                "page_size, max_limit and max_candidates must be > 0".into(),
-            ));
+        if options.max_limit == 0 {
+            return Err(SearchError::InvalidQuery("max_limit must be > 0".into()));
         }
+        // Splits are searched in this process: the leaf must know the `rustie` query.
+        rustie_leaf::register();
         let context = Arc::new(SearcherContext::new_without_invoker(
             SearcherConfig::default(),
             None,
@@ -170,121 +158,96 @@ impl Searcher {
         if limit == 0 {
             return Err(SearchError::InvalidQuery("limit must be > 0".into()));
         }
-        let max_candidates = query
-            .max_candidates
-            .unwrap_or(self.options.max_candidates)
-            .min(self.options.max_candidates);
-        let mut after: Option<PartialHit> = query
+        let after: Option<PartialHit> = query
             .cursor
             .as_deref()
             .map(|token| cursor::decode(&query.query, token))
             .transpose()?;
 
+        // Compiled here too: a bad pattern is the caller's error (400), reported before any
+        // split is touched, and the evaluator renders the spans of the returned hits.
         let compiled = self.compiler.compile(&query.query)?;
         let evaluator = Evaluator::new(&compiled)?;
         let kind = match compiled {
             CompiledQuery::Surface(_) => QueryKind::Surface,
             CompiledQuery::Graph(_) => QueryKind::Graph,
         };
-        let prefilter = prefilter::plan(compiled.candidate());
-        let query_ast = serde_json::to_string(&prefilter.ast)
-            .map_err(|err| SearchError::Backend(err.to_string()))?;
+        let query_ast = QueryAst::Extension(ExtensionQuery {
+            kind: rustie_leaf::QUERY_KIND.to_string(),
+            payload: PatternPayload {
+                pattern: query.query.clone(),
+            }
+            .to_json(),
+        });
 
         let (metastore, cluster_client) = {
             let stack = self.stack.read().await;
             (stack.metastore.clone(), stack.cluster_client.clone())
         };
-
-        let mut hits = Vec::new();
-        let mut scanned = 0usize;
-        let mut candidates_total = None;
-        let mut exhausted = false;
-        let mut next_after: Option<PartialHit> = None;
-        let mut page = (limit * FIRST_PAGE_FACTOR).clamp(MIN_FIRST_PAGE, self.options.page_size);
-        let mut first_round_trip = true;
-        let mut timing = Timing::default();
-
-        while scanned < max_candidates {
-            let want = page.min(max_candidates - scanned);
-            let request = SearchRequest {
-                index_id_patterns: vec![self.options.index_id.clone()],
-                query_ast: query_ast.clone(),
-                max_hits: want as u64,
-                search_after: after.clone(),
-                // Only exact-counting when asked: it forces a full pass of the prefilter.
-                count_hits: if query.count && first_round_trip {
-                    CountHits::CountAll
-                } else {
-                    CountHits::Underestimate
-                } as i32,
-                ..Default::default()
-            };
-            let backend_started = Instant::now();
-            let response = root_search(&self.context, request, &metastore, &cluster_client)
-                .await
-                .map_err(|err| SearchError::Backend(err.to_string()))?;
-            timing.backend_us += backend_started.elapsed().as_micros() as u64;
-            if !response.errors.is_empty() || !response.failed_splits.is_empty() {
-                return Err(SearchError::Backend(format!(
-                    "{} split(s) failed: {}",
-                    response.failed_splits.len(),
-                    response.errors.join("; ")
-                )));
-            }
-            if query.count && first_round_trip {
-                candidates_total = Some(response.num_hits);
-            }
-            first_round_trip = false;
-
-            let num_returned = response.hits.len();
-            let match_started = Instant::now();
-            let mut page_full = false;
-            for hit in &response.hits {
-                scanned += 1;
-                next_after = hit.partial_hit.clone();
-                let Some(sentence) = StoredSentence::from_hit_json(&hit.json) else {
-                    warn!("skipping hit with unexpected stored shape");
-                    continue;
-                };
-                if let Some(sentence_hit) = evaluator.evaluate(&sentence) {
-                    hits.push(sentence_hit);
-                    if hits.len() == limit {
-                        page_full = true;
-                        break;
-                    }
-                }
-            }
-            timing.match_us += match_started.elapsed().as_micros() as u64;
-            debug!(scanned, matched = hits.len(), "round trip evaluated");
-            if page_full {
-                break;
-            }
-            if num_returned < want {
-                exhausted = true;
-                break;
-            }
-            after = next_after.clone();
-            page = (page * 2).min(self.options.page_size);
+        let request = SearchRequest {
+            index_id_patterns: vec![self.options.index_id.clone()],
+            query_ast: serde_json::to_string(&query_ast)
+                .map_err(|err| SearchError::Backend(err.to_string()))?,
+            max_hits: limit as u64,
+            search_after: after,
+            // Exact totals make every split evaluate every candidate; by default Quickwit may
+            // stop once the page is filled.
+            count_hits: if query.count {
+                CountHits::CountAll
+            } else {
+                CountHits::Underestimate
+            } as i32,
+            ..Default::default()
+        };
+        let backend_started = Instant::now();
+        let response = root_search(&self.context, request, &metastore, &cluster_client)
+            .await
+            .map_err(|err| SearchError::Backend(err.to_string()))?;
+        let backend_us = backend_started.elapsed().as_micros() as u64;
+        if !response.errors.is_empty() || !response.failed_splits.is_empty() {
+            return Err(SearchError::Backend(format!(
+                "{} split(s) failed: {}",
+                response.failed_splits.len(),
+                response.errors.join("; ")
+            )));
         }
 
-        let truncated = !exhausted && hits.len() < limit;
-        let next_cursor = match (&next_after, exhausted) {
-            (Some(partial), false) => Some(cursor::encode(&query.query, partial)),
+        let render_started = Instant::now();
+        let mut hits = Vec::with_capacity(response.hits.len());
+        for hit in &response.hits {
+            let Some(sentence) = StoredSentence::from_hit_json(&hit.json) else {
+                warn!("skipping hit with unexpected stored shape");
+                continue;
+            };
+            match evaluator.evaluate(&sentence) {
+                Some(sentence_hit) => hits.push(sentence_hit),
+                // The split matched it, so this means the two evaluators disagree.
+                None => warn!(sentence_id = %sentence.sentence_id, "hit without renderable match"),
+            }
+        }
+        let render_us = render_started.elapsed().as_micros() as u64;
+
+        let exhausted = response.hits.len() < limit;
+        let next_cursor = match (response.hits.last(), exhausted) {
+            (Some(last), false) => last
+                .partial_hit
+                .as_ref()
+                .map(|partial| cursor::encode(&query.query, partial)),
             _ => None,
         };
         Ok(SearchResults {
             query: query.query,
             kind,
-            candidate_query: serde_json::to_value(&prefilter.ast).unwrap_or_default(),
             hits,
-            candidates_total,
-            candidates_scanned: scanned,
+            total_hits: response.num_hits,
+            total_is_exact: query.count,
             exhausted,
-            truncated,
             next_cursor,
-            prefilter_relaxed_clauses: prefilter.relaxed_clauses,
             took_ms: started.elapsed().as_millis() as u64,
-            timing,
+            timing: Timing {
+                backend_us,
+                render_us,
+            },
         })
     }
 }

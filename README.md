@@ -11,6 +11,8 @@ Depends on [quickwit-oss/quickwit](https://github.com/quickwit-oss/quickwit) `v0
 | **`rustie-query`** (`crates/rustie-query`) | RustIE query language — grammar, AST, `QueryParser` |
 | **`rustie-schema`** (`crates/rustie-schema`) | Odinson → sentence docs (tokens + graphs) + Quickwit mapping |
 | **`rustie-search`** (`crates/rustie-search`) | Run RustIE patterns against the index: `Searcher` library + `rustie-serve` HTTP API |
+| **`rustie-leaf`** (`crates/rustie-leaf`) | RustIE inside Quickwit leaf search: GPH2 split component + `rustie` query extension |
+| **`rustie-graph-store`** (`crates/rustie-graph-store`) | GPH2 graph file: blocks, range reads, streaming writer, merge |
 | `quickwit-indexing` | Indexing pipeline |
 | `quickwit-storage` | Object storage (`s3://` always available) |
 | `quickwit-aws` | AWS credentials / S3 clients |
@@ -79,6 +81,20 @@ curl -G localhost:8080/v1/search --data-urlencode 'q=[word=John] >nsubj [pos=VBZ
 
 See [`crates/rustie-search/README.md`](crates/rustie-search/README.md) and, for the design
 (what RustIE's storage layer maps to in Quickwit, and the limits), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Quickwit fork
+
+quick-rustie builds against a fork of Quickwit with three generic extension hooks (split sidecar,
+sidecar hotcache listing, query extension). It is a sibling checkout:
+
+```bash
+# next to this repository
+git clone -b rustie-ext <fork url> ../quickwit-fork
+```
+
+The root `Cargo.toml` `[patch]` section points every Quickwit crate at `../quickwit-fork`.
+Once the branch is pushed, replace the paths with
+`{ git = "<fork url>", branch = "rustie-ext" }`. See `../quickwit-fork/docs/rustie-fork.md`.
 
 ## Build
 

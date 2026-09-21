@@ -1,0 +1,45 @@
+[package]
+name = "rustie-leaf"
+version = "0.1.0"
+edition = "2024"
+description = "RustIE inside Quickwit leaf search: GPH2 split sidecar + pattern query extension"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+bytes = "1"
+futures = "0.3"
+lru = "0.18"
+regex = "1.10"
+serde_json = "1"
+tantivy-fst = "0.5"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+rustie-compiler = { path = "../rustie-compiler" }
+rustie-graph-store = { path = "../rustie-graph-store" }
+rustie-query = { path = "../rustie-query" }
+rustie-schema = { path = "../rustie-schema" }
+
+# Extension points of the Quickwit fork (see docs/rustie-fork.md).
+quickwit-extensions = { path = "../../../quickwit-fork/quickwit/quickwit-extensions" }
+# Same tantivy as the Quickwit fork (spec copied from its workspace), so queries and readers
+# are the same types.
+tantivy = { git = "https://github.com/quickwit-oss/tantivy/", rev = "057458b", default-features = false, features = [
+  "lz4-compression",
+  "mmap",
+  "quickwit",
+  "zstd-compression",
+  "columnar-zstd-compression",
+] }
+
+[dev-dependencies]
+serde_yaml = "0.9"
+tempfile = "3"
+tokio = { version = "=1.52.3", features = ["full"] }
+
+quickwit-indexing = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0", features = ["testsuite"] }
+quickwit-proto = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-query = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-search = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }

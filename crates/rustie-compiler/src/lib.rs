@@ -22,7 +22,8 @@ pub use candidate::CandidateFilter;
 pub use compiler::{CompiledQuery, GraphCompiled, QueryCompiler, SurfacePlan};
 pub use error::{CompileError, Result};
 pub use graph::{
-    compile_plan, evaluate_on_sentence, evaluate_with_fields, GraphPlanSpec, DEFAULT_SENTENCE_CAP,
+    compile_plan, evaluate_on_sentence, evaluate_with_fields, BoundPlan, BoundSurface, EvalScratch,
+    ExternalLeaf, GraphPlanSpec, LeafSource, LeafTest, StringLeafSource, DEFAULT_SENTENCE_CAP,
 };
-pub use matching::{EndpointSpan, NodeTest};
+pub use matching::{EndpointSpan, NodeTest, TokenSet};
 pub use types::{NamedCapture, Span};

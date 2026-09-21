@@ -1,0 +1,13 @@
+[package]
+name = "rustie-graph-store"
+version = "0.1.0"
+edition = "2024"
+description = "GPH2: compact, block-structured per-sentence dependency-graph file (range-readable, mergeable)"
+license = "Apache-2.0"
+
+[dependencies]
+bytes = "1"
+tempfile = "3"
+
+[dev-dependencies]
+proptest = "1"

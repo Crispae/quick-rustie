@@ -11,14 +11,11 @@ pub struct SearchQuery {
     #[serde(default)]
     pub limit: Option<usize>,
     /// Opaque `next_cursor` of a previous response to the *same* query: resumes right after
-    /// the last candidate that response examined (no re-scan).
+    /// its last hit.
     #[serde(default)]
     pub cursor: Option<String>,
-    /// Upper bound on candidate sentences examined in this call (capped by the server).
-    #[serde(default)]
-    pub max_candidates: Option<usize>,
-    /// Also count every candidate in the index (`candidates_total`). Costs a full pass of the
-    /// prefilter, so it is off by default.
+    /// Make `total_hits` exact. Every split then evaluates all of its candidates; otherwise the
+    /// search may stop once the page is filled and `total_hits` is a lower bound.
     #[serde(default)]
     pub count: bool,
 }
@@ -29,7 +26,6 @@ impl SearchQuery {
             query: query.into(),
             limit: None,
             cursor: None,
-            max_candidates: None,
             count: false,
         }
     }
@@ -97,32 +93,23 @@ pub struct SentenceHit {
 pub struct SearchResults {
     pub query: String,
     pub kind: QueryKind,
-    /// Quickwit prefilter that was executed (a superset of the matching sentences).
-    pub candidate_query: serde_json::Value,
     pub hits: Vec<SentenceHit>,
-    /// Sentences the prefilter matches in the whole index; only when `count` was requested.
-    pub candidates_total: Option<u64>,
-    /// Sentences fetched and evaluated in memory by this call.
-    pub candidates_scanned: usize,
-    /// `true` when every candidate has been examined: there is nothing after `hits`.
+    /// Matching sentences in the index: exact when `total_is_exact`, else a lower bound.
+    pub total_hits: u64,
+    pub total_is_exact: bool,
+    /// `true` when there is nothing after `hits`.
     pub exhausted: bool,
-    /// `true` when this call stopped at `max_candidates` before filling the page; pass
-    /// `next_cursor` to keep going.
-    pub truncated: bool,
     /// Pass as `cursor` to get the next page. `None` once `exhausted`.
     pub next_cursor: Option<String>,
-    /// Regex clauses dropped from the prefilter because the index engine cannot run them
-    /// (results stay exact; more candidates are scanned).
-    pub prefilter_relaxed_clauses: usize,
     pub took_ms: u64,
-    /// Where `took_ms` went: Quickwit (prefilter + fetching stored candidates) versus decoding
-    /// and exactly matching them in this process.
     pub timing: Timing,
 }
 
 /// Wall-clock split of one search, in microseconds.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Timing {
+    /// Quickwit search: matching inside the splits and fetching the page's documents.
     pub backend_us: u64,
-    pub match_us: u64,
+    /// Rendering the matched spans of the page.
+    pub render_us: u64,
 }

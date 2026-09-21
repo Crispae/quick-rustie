@@ -4057,7 +4057,6 @@ dependencies = [
 [[package]]
 name = "quickwit-actors"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4076,7 +4075,6 @@ dependencies = [
 [[package]]
 name = "quickwit-aws"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "aws-config",
  "aws-runtime",
@@ -4095,7 +4093,6 @@ dependencies = [
 [[package]]
 name = "quickwit-cluster"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4123,7 +4120,6 @@ dependencies = [
 [[package]]
 name = "quickwit-codegen"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -4138,7 +4134,6 @@ dependencies = [
 [[package]]
 name = "quickwit-common"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "async-speed-limit",
@@ -4182,7 +4177,6 @@ dependencies = [
 [[package]]
 name = "quickwit-config"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4213,7 +4207,6 @@ dependencies = [
 [[package]]
 name = "quickwit-datetime"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "itertools 0.15.0",
  "serde",
@@ -4226,12 +4219,12 @@ dependencies = [
 [[package]]
 name = "quickwit-directories"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "async-trait",
  "postcard",
  "quickwit-common",
+ "quickwit-extensions",
  "quickwit-storage",
  "serde",
  "tantivy",
@@ -4243,7 +4236,6 @@ dependencies = [
 [[package]]
 name = "quickwit-doc-mapper"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4254,6 +4246,7 @@ dependencies = [
  "nom 8.0.0",
  "quickwit-common",
  "quickwit-datetime",
+ "quickwit-extensions",
  "quickwit-macros",
  "quickwit-proto",
  "quickwit-query",
@@ -4271,12 +4264,21 @@ dependencies = [
 [[package]]
 name = "quickwit-dst"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
+
+[[package]]
+name = "quickwit-extensions"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "serde_json",
+ "tantivy",
+]
 
 [[package]]
 name = "quickwit-index-management"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "futures",
@@ -4299,7 +4301,6 @@ dependencies = [
 [[package]]
 name = "quickwit-indexing"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4322,6 +4323,7 @@ dependencies = [
  "quickwit-directories",
  "quickwit-doc-mapper",
  "quickwit-dst",
+ "quickwit-extensions",
  "quickwit-ingest",
  "quickwit-metastore",
  "quickwit-metrics",
@@ -4345,7 +4347,6 @@ dependencies = [
 [[package]]
 name = "quickwit-ingest"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4382,7 +4383,6 @@ dependencies = [
 [[package]]
 name = "quickwit-macros"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4392,7 +4392,6 @@ dependencies = [
 [[package]]
 name = "quickwit-metastore"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4430,7 +4429,6 @@ dependencies = [
 [[package]]
 name = "quickwit-metrics"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "atomic_float",
  "const_format",
@@ -4445,7 +4443,6 @@ dependencies = [
 [[package]]
 name = "quickwit-opentelemetry"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "arrow",
@@ -4469,7 +4466,6 @@ dependencies = [
 [[package]]
 name = "quickwit-parquet-engine"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "arrow",
@@ -4497,16 +4493,17 @@ dependencies = [
 [[package]]
 name = "quickwit-proto"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
  "bytesize",
  "bytestring",
+ "futures",
  "glob",
  "hex",
  "http 1.5.0",
+ "mockall",
  "prost",
  "prost-build",
  "prost-types",
@@ -4532,7 +4529,6 @@ dependencies = [
 [[package]]
 name = "quickwit-query"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4540,6 +4536,7 @@ dependencies = [
  "hex",
  "quickwit-common",
  "quickwit-datetime",
+ "quickwit-extensions",
  "regex",
  "rustc-hash",
  "serde",
@@ -4556,7 +4553,6 @@ dependencies = [
 [[package]]
 name = "quickwit-search"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4597,7 +4593,6 @@ dependencies = [
 [[package]]
 name = "quickwit-storage"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "ahash",
  "anyhow",
@@ -4615,6 +4610,7 @@ dependencies = [
  "lru 0.18.4",
  "md5",
  "mini-moka",
+ "mockall",
  "pin-project",
  "quick_cache",
  "quickwit-aws",
@@ -4639,7 +4635,6 @@ dependencies = [
 [[package]]
 name = "quickwit-transport"
 version = "0.9.0"
-source = "git+https://github.com/quickwit-oss/quickwit.git?tag=v0.9.0#cc420c34d686a75f412b7cd450564c5c99ad6f21"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4927,11 +4922,22 @@ name = "rustie-compiler"
 version = "0.1.0"
 dependencies = [
  "pretty_assertions",
+ "proptest",
  "regex",
+ "rustie-graph-store",
  "rustie-query",
  "rustie-schema",
  "serde",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rustie-graph-store"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "proptest",
+ "tempfile",
 ]
 
 [[package]]
@@ -4953,6 +4959,7 @@ dependencies = [
  "quickwit-proto",
  "quickwit-storage",
  "quickwit-transport",
+ "rustie-leaf",
  "rustie-schema",
  "serde_json",
  "sha2 0.10.9",
@@ -4962,6 +4969,35 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "walkdir",
+]
+
+[[package]]
+name = "rustie-leaf"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "futures",
+ "lru 0.18.4",
+ "quickwit-extensions",
+ "quickwit-indexing",
+ "quickwit-proto",
+ "quickwit-query",
+ "quickwit-search",
+ "regex",
+ "rustie-compiler",
+ "rustie-graph-store",
+ "rustie-query",
+ "rustie-schema",
+ "serde_json",
+ "serde_yaml",
+ "tantivy",
+ "tantivy-fst",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -5004,11 +5040,11 @@ dependencies = [
  "quickwit-storage",
  "rustie-compiler",
  "rustie-indexer",
+ "rustie-leaf",
  "rustie-query",
  "rustie-schema",
  "serde",
  "serde_json",
- "tantivy-fst",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

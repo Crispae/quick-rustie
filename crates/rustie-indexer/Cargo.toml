@@ -26,6 +26,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 walkdir = "2"
 
+rustie-leaf = { path = "../rustie-leaf" }
 rustie-schema = { path = "../rustie-schema" }
 
 # Quickwit OSS, pinned to the same tag as the root crate. No `testsuite`

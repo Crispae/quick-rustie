@@ -1,7 +1,10 @@
 //! Thompson NFA over directed, labeled graph hops.
 
+use crate::graph::dict::LabelSet;
 use crate::matching::node_test::full_match;
+use crate::matching::tokenset::TokenSet;
 use regex::Regex;
+use rustie_graph_store::SentenceView;
 use std::collections::{HashSet, VecDeque};
 
 /// Edge direction relative to the current node.
@@ -346,6 +349,39 @@ impl HopNfa {
         }
     }
 
+    /// Compile label tests against a segment's relation dictionary and fold
+    /// ε-closures into the transitions, so a search never touches strings.
+    pub fn bind(&self, rel_dict: &[String]) -> BoundHop {
+        let closure = |s: usize| -> Vec<u16> {
+            self.epsilon_closure(&[s])
+                .into_iter()
+                .map(|x| x as u16)
+                .collect()
+        };
+        let trans = (0..self.n_states)
+            .map(|s| {
+                self.consume[s]
+                    .iter()
+                    .filter_map(|c| {
+                        let labels = LabelSet::compile(rel_dict, &c.pred);
+                        // A label that never occurs in this segment can't be walked.
+                        (!labels.is_empty()).then(|| BoundTrans {
+                            dir: c.dir,
+                            labels,
+                            to: closure(c.to),
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        BoundHop {
+            n_states: self.n_states,
+            start: closure(self.start),
+            accept: self.accept as u16,
+            trans,
+        }
+    }
+
     pub fn accepts_path(
         &self,
         n_tokens: usize,
@@ -354,6 +390,89 @@ impl HopNfa {
         dst: usize,
     ) -> bool {
         self.reachable_nodes(n_tokens, edges, src).contains(&dst)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BoundTrans {
+    dir: Dir,
+    labels: LabelSet,
+    /// ε-closure of the target state.
+    to: Vec<u16>,
+}
+
+/// A [`HopNfa`] bound to one segment's relation dictionary.
+#[derive(Debug, Clone)]
+pub struct BoundHop {
+    n_states: usize,
+    start: Vec<u16>,
+    accept: u16,
+    trans: Vec<Vec<BoundTrans>>,
+}
+
+/// Reusable buffers for [`BoundHop::reach`].
+#[derive(Debug, Default)]
+pub struct HopScratch {
+    visited: Vec<u64>,
+    queue: Vec<(u32, u16)>,
+}
+
+impl BoundHop {
+    /// Add to `out` every token reachable from any of `sources` along an
+    /// accepted path, walking the sentence's CSR in (token × state) space.
+    pub fn reach(
+        &self,
+        view: &SentenceView<'_>,
+        sources: impl Iterator<Item = usize>,
+        out: &mut TokenSet,
+        sc: &mut HopScratch,
+    ) {
+        let n = view.n_tokens;
+        let ns = self.n_states;
+        sc.visited.clear();
+        sc.visited.resize((n * ns).div_ceil(64).max(1), 0);
+        sc.queue.clear();
+        let visit = |visited: &mut Vec<u64>, queue: &mut Vec<(u32, u16)>, node: usize, st: u16| {
+            let k = node * ns + st as usize;
+            let (w, b) = (k / 64, 1u64 << (k % 64));
+            if visited[w] & b == 0 {
+                visited[w] |= b;
+                queue.push((node as u32, st));
+            }
+        };
+        for u in sources {
+            if u >= n {
+                continue;
+            }
+            for &s in &self.start {
+                visit(&mut sc.visited, &mut sc.queue, u, s);
+            }
+        }
+        while let Some((node, st)) = sc.queue.pop() {
+            let node = node as usize;
+            if st == self.accept {
+                out.set(node);
+            }
+            for t in &self.trans[st as usize] {
+                let (off, to, rel) = match t.dir {
+                    Dir::Out => (view.out_off, view.out_to, view.out_rel),
+                    Dir::In => (view.in_off, view.in_from, view.in_rel),
+                };
+                let (a, b) = (off[node] as usize, off[node + 1] as usize);
+                for e in a..b {
+                    if !t.labels.contains(rel[e] as usize) {
+                        continue;
+                    }
+                    let next = to[e] as usize;
+                    if next >= n {
+                        continue;
+                    }
+                    for &ns2 in &t.to {
+                        visit(&mut sc.visited, &mut sc.queue, next, ns2);
+                    }
+                }
+            }
+        }
     }
 }
 

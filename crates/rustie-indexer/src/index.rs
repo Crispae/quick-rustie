@@ -208,6 +208,9 @@ impl Indexer {
     /// actors. Fails fast (before any actor starts) if the endpoint or bucket is unusable.
     pub async fn connect(minio: MinioConfig, options: IndexerOptions) -> Result<Self> {
         options.validate()?;
+        // Every split gets its GPH2 graph component (built by the Quickwit fork's sidecar hook
+        // while indexing and merging). Must happen before the pipeline actors start.
+        rustie_leaf::register();
 
         let (storage_resolver, metastore) = open_metastore(&minio, &options.metastore_uri).await?;
 

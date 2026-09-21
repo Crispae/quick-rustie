@@ -21,12 +21,12 @@ clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
-tantivy-fst = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 rustie-compiler = { path = "../rustie-compiler" }
 rustie-indexer = { path = "../rustie-indexer" }
+rustie-leaf = { path = "../rustie-leaf" }
 rustie-query = { path = "../rustie-query" }
 rustie-schema = { path = "../rustie-schema" }
 

@@ -56,6 +56,10 @@ indexer.shutdown().await;
 
 ## Behavior worth knowing
 
+- **Graph component.** `Indexer::connect` registers `rustie-leaf`, so every split (and every merged
+  split) carries `rustie.gph2`, used by graph patterns at search time. Splits indexed before that
+  have none: re-index with `--overwrite`.
+
 - **Idempotency.** Each batch is checkpointed under a partition derived from a SHA-256 of its
   documents, so re-running over the same files with the same `--batch-size` skips everything already
   published. Changing `--batch-size`/`--limit` re-groups files into different batches and will

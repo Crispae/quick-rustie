@@ -45,12 +45,8 @@ struct Args {
     /// Re-open the metastore this often (seconds) to see newly indexed splits; 0 disables.
     #[arg(long, default_value_t = 30)]
     refresh_secs: u64,
-    #[arg(long, default_value_t = 200)]
-    page_size: usize,
     #[arg(long, default_value_t = 1_000)]
     max_limit: usize,
-    #[arg(long, default_value_t = 200_000)]
-    max_candidates: usize,
     #[arg(long, default_value_t = 30)]
     timeout_secs: u64,
     #[arg(long, default_value_t = 16)]
@@ -99,9 +95,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
     };
     let mut options = SearcherOptions::for_bucket(&minio.bucket);
     options.index_id = args.index_id;
-    options.page_size = args.page_size;
     options.max_limit = args.max_limit;
-    options.max_candidates = args.max_candidates;
     options.timeout = Duration::from_secs(args.timeout_secs);
     if let Some(uri) = args.metastore_uri {
         options.metastore_uri = uri;

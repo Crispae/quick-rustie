@@ -141,26 +141,23 @@ async fn queries(searcher: Arc<Searcher>) {
     assert_eq!(spans.len(), 2, "one span per traversal endpoint");
     assert_eq!(spans[0].text.as_str(), r.hits[0].words[1]);
 
-    // Prefilter false positive: every term is in the sentence, but not that relation.
+    // Every term is in the sentence, but not that relation: rejected inside the split, so it is
+    // not even counted.
     let r = searcher
-        .search(SearchQuery::new("[pos=VBZ] >advmod [pos=NNP]"))
+        .search(SearchQuery::new("[pos=VBZ] >advmod [pos=NNP]").count(true))
         .await
         .unwrap();
-    assert!(
-        r.hits.is_empty(),
-        "{} candidates must be filtered exactly",
-        r.candidates_scanned
-    );
+    assert!(r.hits.is_empty());
+    assert_eq!(r.total_hits, 0);
 
-    // Regex prefilter.
+    // Regex over the term dictionary.
     let r = searcher
         .search(SearchQuery::new("[word=/J.*/]"))
         .await
         .unwrap();
     assert_eq!(r.hits.len(), 1);
 
-    // Token-aware prefilter: adjacency is decided by the index (positions), so the
-    // non-adjacent sentence is never even fetched.
+    // Adjacency from token positions: `e` has both words, not adjacent, and is not counted.
     let r = searcher
         .search(SearchQuery::new("[word=the] [word=cat]").count(true))
         .await
@@ -168,33 +165,27 @@ async fn queries(searcher: Arc<Searcher>) {
     assert_eq!(r.hits.len(), 1);
     assert_eq!(r.hits[0].doc_id, "d");
     assert_eq!(r.hits[0].matches[0].spans[0].text, "the cat");
-    assert_eq!(
-        r.candidates_total,
-        Some(1),
-        "phrase prefilter admits only adjacent"
-    );
-    assert_eq!(r.candidates_scanned, 1);
-    assert_eq!(r.candidate_query["type"], "full_text");
+    assert_eq!((r.total_hits, r.total_is_exact), (1, true));
 
-    // Fuzzy matching is case-insensitive, and so must its prefilter be.
+    // Fuzzy matching is case-insensitive.
     let r = searcher
         .search(SearchQuery::new("[word=john~]"))
         .await
         .unwrap();
     assert_eq!(r.hits.len(), 1, "fuzzy prefilter must admit `John`");
 
-    // `^…$` is stripped; `\b` is beyond the index's regex engine, so it is dropped at plan
-    // time while the exact matcher still enforces it.
+    // Anchors are redundant for whole-token matching; `\b` is outside the term dictionary's
+    // regex dialect and is resolved by scanning the dictionary instead.
     let r = searcher
         .search(SearchQuery::new("[word=/^J.*$/]"))
         .await
         .unwrap();
-    assert_eq!((r.hits.len(), r.prefilter_relaxed_clauses), (1, 0));
+    assert_eq!(r.hits.len(), 1);
     let r = searcher
         .search(SearchQuery::new(r"[word=/\bJohn/]"))
         .await
         .unwrap();
-    assert_eq!((r.hits.len(), r.prefilter_relaxed_clauses), (1, 1));
+    assert_eq!(r.hits.len(), 1);
 
     // Cursor paging resumes after the last examined candidate: no overlap, no gaps.
     let first = searcher

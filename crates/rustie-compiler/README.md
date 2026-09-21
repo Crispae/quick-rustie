@@ -10,7 +10,8 @@ algorithm against [`SentenceGraph`](../rustie-schema) JSON — no GPH2 sidecars.
 | --- | --- |
 | `QueryCompiler` → `CompiledQuery::{Surface,Graph}` | Tantivy custom scorers |
 | `CandidateFilter` (term / regex / **phrase** / and / or) + `to_quickwit_query()` | Quickwit HTTP search client |
-| Graph plan / NFA / sentence eval | GPH2 writer/reader |
+| Graph plan / NFA / sentence eval | GPH2 writer/reader (`rustie-graph-store`) |
+| `BoundPlan` / `BoundSurface`: evaluation over GPH2 dictionary ids + caller-supplied token sets (`LeafSource`) | tantivy integration (`rustie-leaf`) |
 
 ## Usage
 
