@@ -1,0 +1,46 @@
+[package]
+name = "rustie-search"
+version = "0.1.0"
+edition = "2024"
+description = "Run RustIE / Odinson queries against the IE postings index on Quickwit (library + HTTP API)"
+license = "Apache-2.0"
+readme = "README.md"
+
+[lib]
+name = "rustie_search"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rustie-serve"
+path = "src/bin/rustie-serve.rs"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tantivy-fst = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+rustie-compiler = { path = "../rustie-compiler" }
+rustie-indexer = { path = "../rustie-indexer" }
+rustie-query = { path = "../rustie-query" }
+rustie-schema = { path = "../rustie-schema" }
+
+quickwit-config = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-metastore = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-proto = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-query = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-search = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-storage = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+
+# Same pin as the root crate.
+tokio = { version = "=1.52.3", features = ["full"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

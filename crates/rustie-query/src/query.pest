@@ -1,0 +1,74 @@
+WHITESPACE = _{ " " | "\t" | "\n" }
+
+query = { SOI ~ (pattern_chain | default_field_query) ~ EOI }
+
+// Default field queries (bare strings/regex without brackets)
+default_field_query = { default_string | default_regex }
+default_string = @{ ASCII_ALPHANUMERIC+ }
+// Extended regex: support standard Rust/Tantivy regex characters including ^$-{} and whitespace
+default_regex = @{ "/" ~ (!("/" | "\n") ~ ANY)* ~ "/" }
+
+// Pattern chain: allows both adjacent patterns and graph traversals
+pattern_chain = { quantified_pattern ~ pattern_link* }
+pattern_link = { graph_path ~ quantified_pattern? | quantified_pattern }
+graph_path = { traversal_step+ }
+traversal_step = { traversal_op ~ hop_quantifier? }
+traversal_op = { outgoing_wildcard | incoming_wildcard | outgoing_disjunctive | incoming_disjunctive | outgoing | incoming }
+outgoing_wildcard = { ">>" }
+incoming_wildcard = { "<<" }
+outgoing = { ">" ~ traversal_label }
+incoming = { "<" ~ traversal_label }
+outgoing_disjunctive = { ">" ~ traversal_label ~ ( "|" ~ traversal_label )+ }
+incoming_disjunctive = { "<" ~ traversal_label ~ ( "|" ~ traversal_label )+ }
+hop_quantifier = { "?" | "*" | "+" }
+traversal_label = { traversal_regex | label }
+// Extended regex: support standard Rust/Tantivy regex syntax
+traversal_regex = @{ "/" ~ (!("/" | "\n") ~ ANY)* ~ "/" }
+label = @{ (ASCII_ALPHANUMERIC | "_" | ":" | "-")+ }
+
+// Adjacent atoms only (no graph hops). Rely on pest's implicit WHITESPACE —
+// an explicit WHITESPACE+ here would fail after whitespace was already skipped.
+sequence = { named_capture | quantified_pattern ~ quantified_pattern+ | quantified_pattern }
+quantified_pattern = { atomic_pattern ~ pattern_quantifier? }
+atomic_pattern = _{ constraint | bare_word | group | assertion_pattern | named_capture }
+bare_word = @{ ASCII_ALPHANUMERIC+ }
+// IMPORTANT: Try lazy quantifiers first since they are longer (e.g., "*?" before "*")
+// PEG parsers match the first alternative, so longer patterns must come first
+pattern_quantifier = { lazy_quantifier | greedy_quantifier }
+lazy_quantifier = { "*?" | "+?" | "??" | lazy_range_quantifier }
+greedy_quantifier = { "*" | "+" | "?" | range_quantifier }
+lazy_range_quantifier = { "{" ~ unsigned_int? ~ "," ~ unsigned_int? ~ "}?" }
+range_quantifier = { "{" ~ unsigned_int? ~ "," ~ unsigned_int? ~ "}" }
+unsigned_int = @{ ASCII_DIGIT+ }
+group = { "(" ~ pattern_chain ~ ")" }
+
+constraint = { "[" ~ constraint_body? ~ "]" }
+constraint_body = { constraint_expr }
+constraint_expr = _{ disjunction }
+disjunction = { conjunction ~ ( "|" ~ conjunction )* }
+conjunction = { negated_atom ~ ( "&" ~ negated_atom )* }
+negated_atom = { prefix_negation | atom }
+prefix_negation = { "!" ~ atom }
+atom = _{ field_constraint | wildcard | group_constraint }
+group_constraint = { "(" ~ constraint_expr ~ ")" }
+
+field_constraint = { field_name ~ comparison_op ~ (regex_value | value) ~ fuzzy_op? }
+field_name = @{ ASCII_ALPHANUMERIC+ }
+comparison_op = { "=" | "!=" }
+fuzzy_op = { "~" }
+value = @{ (ASCII_ALPHANUMERIC | "-" | "_")+ }
+// Extended regex: support standard Rust/Tantivy regex syntax (any character except unescaped / or newline)
+regex_value = @{ "/" ~ (!("/" | "\n") ~ ANY)* ~ "/" }
+wildcard = { "*" }
+
+// Assertions (lookahead and lookbehind only)
+assertion_pattern = { lookahead_assertion | lookbehind_assertion }
+lookahead_assertion = { positive_lookahead | negative_lookahead }
+positive_lookahead = { "(?=" ~ sequence ~ ")" }
+negative_lookahead = { "(?!" ~ sequence ~ ")" }
+lookbehind_assertion = { positive_lookbehind | negative_lookbehind }
+positive_lookbehind = { "(?<=" ~ sequence ~ ")" }
+negative_lookbehind = { "(?<!" ~ sequence ~ ")" }
+
+named_capture = { "(?<" ~ capture_name ~ ">" ~ pattern_chain ~ ")" }
+capture_name = @{ ASCII_ALPHANUMERIC+ ~ (":" ~ ("token" | "phrase" | "pred"))? }

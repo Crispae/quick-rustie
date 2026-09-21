@@ -1,0 +1,18 @@
+[package]
+name = "rustie-query"
+version = "0.1.0"
+edition = "2021"
+description = "RustIE Odinson-style query language: grammar, AST, and parser"
+license = "Apache-2.0"
+readme = "README.md"
+
+[dependencies]
+pest = "2.7"
+pest_derive = "2.7"
+regex = "1.10"
+serde = { version = "1.0", features = ["derive", "rc"] }
+thiserror = "1.0"
+
+[dev-dependencies]
+pretty_assertions = "1"
+proptest = "1"

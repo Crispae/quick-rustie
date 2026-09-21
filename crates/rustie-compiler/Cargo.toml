@@ -1,0 +1,17 @@
+[package]
+name = "rustie-compiler"
+version = "0.1.0"
+edition = "2021"
+description = "Compile RustIE patterns into Quickwit candidate filters and in-memory graph/surface plans"
+license = "Apache-2.0"
+readme = "README.md"
+
+[dependencies]
+regex = "1.10"
+rustie-query = { path = "../rustie-query" }
+rustie-schema = { path = "../rustie-schema" }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+
+[dev-dependencies]
+pretty_assertions = "1"

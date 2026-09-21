@@ -1,0 +1,87 @@
+version: 0.7
+
+index_id: "ie-postings"
+
+index_uri: "s3://rustie-dev/indexes/ie-postings"
+
+doc_mapping:
+  mode: strict
+  field_mappings:
+    - name: doc_id
+      type: text
+      tokenizer: raw
+      stored: true
+    - name: sentence_id
+      type: text
+      tokenizer: raw
+      stored: true
+    - name: sentence_length
+      type: u64
+      stored: true
+      fast: true
+    - name: word
+      type: text
+      tokenizer: pipe_tokens
+      record: position
+      stored: true
+    - name: lemma
+      type: text
+      tokenizer: pipe_tokens
+      record: position
+      stored: true
+    - name: pos
+      type: text
+      tokenizer: pipe_tokens
+      record: position
+      stored: true
+    - name: tag
+      type: text
+      tokenizer: pipe_tokens
+      record: position
+      stored: true
+    - name: entity
+      type: text
+      tokenizer: pipe_tokens
+      record: position
+      stored: true
+    - name: chunk
+      type: text
+      tokenizer: pipe_tokens
+      record: position
+      stored: true
+    - name: norm
+      type: text
+      tokenizer: pipe_tokens
+      record: position
+      stored: true
+    - name: raw
+      type: text
+      tokenizer: pipe_tokens
+      record: position
+      stored: true
+    - name: outgoing_edges
+      type: text
+      tokenizer: pipe_tokens
+      record: basic
+      stored: false
+    - name: incoming_edges
+      type: text
+      tokenizer: pipe_tokens
+      record: basic
+      stored: false
+    - name: dependencies
+      type: json
+      stored: true
+      indexed: false
+    - name: dependencies_basic
+      type: json
+      stored: true
+      indexed: false
+  tokenizers:
+    - name: pipe_tokens
+      type: regex
+      pattern: "[^|]+"
+      filters: []
+
+search_settings:
+  default_search_fields: [word]

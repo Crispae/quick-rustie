@@ -1,0 +1,5 @@
+[build]
+# Required by Quickwit (exposes tokio unstable APIs such as disable_lifo_slot).
+# See: https://github.com/quickwit-oss/quickwit/blob/main/.cargo/config.toml
+rustflags = ["--cfg", "tokio_unstable"]
+rustdocflags = ["--cfg", "tokio_unstable"]

@@ -1,0 +1,47 @@
+[package]
+name = "rustie-indexer"
+version = "0.1.0"
+edition = "2024"
+description = "Index flattened Odinson sentences into a Quickwit index stored on MinIO / S3"
+license = "Apache-2.0"
+readme = "README.md"
+
+[lib]
+name = "rustie_indexer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rustie-index"
+path = "src/bin/rustie-index.rs"
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+walkdir = "2"
+
+rustie-schema = { path = "../rustie-schema" }
+
+# Quickwit OSS, pinned to the same tag as the root crate. No `testsuite`
+# features: the indexing service wiring is done here, not via `TestSandbox`.
+quickwit-actors = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-cluster = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-common = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-config = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-doc-mapper = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-index-management = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-ingest = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-indexing = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-metastore = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-proto = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-storage = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-transport = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+
+# Same pin as the root crate (see comment there).
+tokio = { version = "=1.52.3", features = ["full"] }

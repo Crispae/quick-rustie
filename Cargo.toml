@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [".", "crates/rustie-query", "crates/rustie-schema", "crates/rustie-compiler", "crates/rustie-indexer", "crates/rustie-search"]
+
+[package]
+name = "quick_rustie"
+version = "0.1.0"
+edition = "2024"
+description = "Boilerplate Rust library for Quickwit indexing on S3"
+license = "Apache-2.0"
+repository = "https://github.com/quickwit-oss/quickwit"
+
+[dependencies]
+anyhow = "1"
+
+# RustIE query language (AST + pest parser), vendored in this workspace.
+rustie-query = { path = "crates/rustie-query" }
+# Odinson → sentence docs + Quickwit postings mapping.
+rustie-schema = { path = "crates/rustie-schema" }
+# Pattern → Quickwit candidate filters + in-memory graph/surface plans.
+rustie-compiler = { path = "crates/rustie-compiler" }
+# MinIO helpers + Odinson → Quickwit indexing pipeline.
+rustie-indexer = { path = "crates/rustie-indexer" }
+# Query execution over the index (library + HTTP API).
+rustie-search = { path = "crates/rustie-search" }
+
+# Quickwit OSS — https://github.com/quickwit-oss/quickwit
+# S3 support is always compiled into quickwit-storage (no feature flag).
+# Pin to v0.9.0 for a reproducible indexing + S3 stack.
+quickwit-aws = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-common = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-config = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-doc-mapper = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-indexing = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-metastore = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-storage = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+
+# Pin to the Tokio version Quickwit v0.9.0 locks; newer minors need care with
+# tokio_unstable APIs used by quickwit-common.
+tokio = { version = "=1.52.3", features = ["full"] }
+
+[[example]]
+name = "minio_ping"
+path = "examples/minio_ping.rs"
