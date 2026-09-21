@@ -85,16 +85,15 @@ See [`crates/rustie-search/README.md`](crates/rustie-search/README.md) and, for 
 ## Quickwit fork
 
 quick-rustie builds against a fork of Quickwit with three generic extension hooks (split sidecar,
-sidecar hotcache listing, query extension). It is a sibling checkout:
+sidecar hotcache listing, query extension): <https://github.com/Crispae/quickwit-custom>, branch
+`rustie-ext`, based on upstream `cc420c3`.
 
-```bash
-# next to this repository
-git clone -b rustie-ext <fork url> ../quickwit-fork
-```
-
-The root `Cargo.toml` `[patch]` section points every Quickwit crate at `../quickwit-fork`.
-Once the branch is pushed, replace the paths with
-`{ git = "<fork url>", branch = "rustie-ext" }`. See `../quickwit-fork/docs/rustie-fork.md`.
+The root `Cargo.toml` `[patch]` section redirects every Quickwit crate to that repository at a
+pinned `rev`, and `rustie-leaf` takes `quickwit-extensions` from it. Nothing needs to be checked
+out next to this repository. To use a new fork commit, change the `rev` in all of those entries
+(and in `crates/rustie-leaf/Cargo.toml`) to the same commit. To develop the fork locally, clone it
+and temporarily point the entries at `path = "<clone>/quickwit/<crate>"`. The hooks and how to
+rebase them are in the fork's `docs/rustie-fork.md`.
 
 ## Build
 

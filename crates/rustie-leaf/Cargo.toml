@@ -23,7 +23,7 @@ rustie-query = { path = "../rustie-query" }
 rustie-schema = { path = "../rustie-schema" }
 
 # Extension points of the Quickwit fork (see docs/rustie-fork.md).
-quickwit-extensions = { path = "../../../quickwit-fork/quickwit/quickwit-extensions" }
+quickwit-extensions = { git = "https://github.com/Crispae/quickwit-custom", rev = "45a682ecd3ee64cd2683286af299ac3c2bccd302" }
 # Same tantivy as the Quickwit fork (spec copied from its workspace), so queries and readers
 # are the same types.
 tantivy = { git = "https://github.com/quickwit-oss/tantivy/", rev = "057458b", default-features = false, features = [

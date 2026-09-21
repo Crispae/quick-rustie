@@ -36,10 +36,9 @@ search
 | `rustie-indexer` | Index Odinson data into MinIO/S3 through Quickwit's indexing service |
 | `rustie-search` | `Searcher` library + `rustie-serve` HTTP API |
 
-The Quickwit fork is a sibling checkout, `../quickwit-fork` (branch `rustie-ext`); see its
+The Quickwit fork is <https://github.com/Crispae/quickwit-custom> (branch `rustie-ext`); see its
 `docs/rustie-fork.md` for the three hooks and how to rebase them. Every Quickwit crate is
-redirected to it by the `[patch]` section of the root `Cargo.toml` (cargo cannot load it as a
-subdirectory of this workspace: its crates inherit settings from its own workspace root).
+redirected to it, at a pinned commit, by the `[patch]` section of the root `Cargo.toml`.
 
 ## What replaced what (RustIE → quick-rustie)
 

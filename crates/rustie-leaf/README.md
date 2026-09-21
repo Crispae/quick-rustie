@@ -1,7 +1,7 @@
 # rustie-leaf
 
 RustIE pattern matching inside Quickwit leaf search, through the extension hooks of the Quickwit
-fork (`../quickwit-fork`, branch `rustie-ext`). Call `rustie_leaf::register()` once at start-up in
+fork (<https://github.com/Crispae/quickwit-custom>, branch `rustie-ext`). Call `rustie_leaf::register()` once at start-up in
 every process that indexes or searches (`rustie-indexer` and `rustie-search` do).
 
 ## Graph component (`GraphSidecar`)
