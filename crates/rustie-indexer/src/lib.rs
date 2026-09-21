@@ -20,6 +20,7 @@
 mod error;
 pub mod flatten_source;
 mod index;
+mod lanes;
 pub mod minio;
 mod pipeline;
 mod store;

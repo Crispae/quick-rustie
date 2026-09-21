@@ -75,6 +75,12 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     threads: usize,
 
+    /// Indexing pipelines run at once, each on its own Quickwit source. One pipeline uses about
+    /// two cores; more index batches concurrently (each holds a batch in memory). Re-runs skip
+    /// or resume batches by content, so this may differ between runs.
+    #[arg(long, default_value_t = 1)]
+    pipelines: usize,
+
     /// Drop documents the index mapping rejects instead of aborting the run.
     #[arg(long)]
     skip_invalid: bool,
@@ -143,6 +149,7 @@ async fn run(args: Args) -> anyhow::Result<ExitCode> {
     options.data_dir = args.data_dir;
     options.split_num_docs_target = args.split_num_docs_target;
     options.threads = args.threads;
+    options.pipelines = args.pipelines;
     if args.skip_invalid {
         options.on_invalid_doc = InvalidDocPolicy::Skip;
     }

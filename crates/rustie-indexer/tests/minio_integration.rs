@@ -73,6 +73,90 @@ async fn index_create_ingest_reingest() {
     outcome
 }
 
+fn unique_options(minio: &MinioConfig, tag: &str) -> IndexerOptions {
+    let unique = format!(
+        "it-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+    let mut options = IndexerOptions::for_bucket(&minio.bucket);
+    options.index_id = format!("ie-postings-{unique}");
+    options.metastore_uri = format!("s3://{}/{unique}/metastore", minio.bucket);
+    options.index_root_uri = format!("s3://{}/{unique}/indexes", minio.bucket);
+    options
+}
+
+/// Batches indexed concurrently on several lanes give the same index as a serial run, and a
+/// re-run skips them whatever the number of lanes: no document is ever indexed twice.
+#[tokio::test]
+#[ignore = "needs MinIO; set RUSTIE_MINIO_TEST=1"]
+async fn lanes_index_concurrently_and_reruns_are_lane_count_independent() {
+    if std::env::var("RUSTIE_MINIO_TEST").as_deref() != Ok("1") {
+        eprintln!("RUSTIE_MINIO_TEST!=1, skipping");
+        return;
+    }
+    let minio = MinioConfig::from_env();
+    ping_minio(&minio).await.expect("MinIO reachable");
+
+    let dir = tempfile::tempdir().unwrap();
+    let words = ["Dogs", "bark", "Cats", "sleep", "Birds", "sing", "Fish", "swim"];
+    for (i, pair) in words.chunks(2).enumerate() {
+        for j in 0..3 {
+            std::fs::write(
+                dir.path().join(format!("f{i}_{j}.json")),
+                odinson_doc(&format!("d{i}_{j}"), pair),
+            )
+            .unwrap();
+        }
+    }
+    let total_docs = 12;
+
+    let mut options = unique_options(&minio, "lanes");
+    options.pipelines = 3;
+    let indexer = Indexer::connect(minio.clone(), options.clone())
+        .await
+        .unwrap();
+    let outcome = async {
+        // One file per batch: twelve batches over three lanes.
+        let first = indexer.index_odinson_dir(dir.path(), None, 1).await.unwrap();
+        assert_eq!(first.files_seen, total_docs);
+        assert_eq!(first.docs_submitted, total_docs as u64);
+        assert_eq!(first.docs_processed, total_docs as u64);
+        assert_eq!(first.batches, total_docs);
+        assert_eq!(first.batches_already_indexed, 0);
+        assert_eq!(indexer.summary().await.unwrap().num_docs, total_docs as u64);
+
+        // Same content again on the same lanes: everything skipped.
+        let again = indexer.index_odinson_dir(dir.path(), None, 1).await.unwrap();
+        assert_eq!(again.batches_already_indexed, total_docs);
+        assert_eq!(again.docs_processed, 0);
+        assert_eq!(indexer.summary().await.unwrap().num_docs, total_docs as u64);
+
+        // A run with one lane (or two) must see what the other lanes indexed.
+        for pipelines in [1, 2] {
+            let mut serial = options.clone();
+            serial.pipelines = pipelines;
+            let other = Indexer::connect(minio.clone(), serial).await.unwrap();
+            let rerun = other.index_odinson_dir(dir.path(), None, 1).await.unwrap();
+            other.shutdown().await;
+            assert_eq!(rerun.batches_already_indexed, total_docs, "{pipelines} lanes");
+            assert_eq!(rerun.docs_processed, 0);
+        }
+        assert_eq!(
+            indexer.summary().await.unwrap().num_docs,
+            total_docs as u64,
+            "no duplicates"
+        );
+    }
+    .await;
+    let _ = indexer.delete_index().await;
+    indexer.shutdown().await;
+    outcome
+}
+
 async fn run(indexer: &Indexer, data: &std::path::Path) {
     assert_eq!(indexer.ensure_index().await.unwrap(), IndexStatus::Created);
     assert_eq!(

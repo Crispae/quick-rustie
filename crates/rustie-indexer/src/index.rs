@@ -9,16 +9,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use futures::StreamExt;
+use futures::future::{BoxFuture, FutureExt};
+use futures::stream::FuturesUnordered;
 use quickwit_common::uri::Uri;
 use quickwit_config::{
-    CLI_SOURCE_ID, ConfigFormat, IndexConfig, SourceConfig, SourceInputFormat, SourceParams,
-    VecSourceParams, build_doc_mapper, load_index_config_from_user_config,
+    ConfigFormat, IndexConfig, SourceConfig, SourceInputFormat, SourceParams, VecSourceParams,
+    build_doc_mapper, load_index_config_from_user_config,
 };
 use quickwit_doc_mapper::DocMapper;
 use quickwit_index_management::{IndexService, IndexServiceError, run_garbage_collect};
-use quickwit_metastore::{IndexMetadata, IndexMetadataResponseExt, MetastoreServiceExt};
+use quickwit_metastore::{
+    AddSourceRequestExt, IndexMetadata, IndexMetadataResponseExt, MetastoreServiceExt,
+};
 use quickwit_proto::metastore::{
-    IndexMetadataRequest, MetastoreError, MetastoreService, MetastoreServiceClient,
+    AddSourceRequest, IndexMetadataRequest, MetastoreError, MetastoreService,
+    MetastoreServiceClient,
 };
 use quickwit_proto::types::NodeId;
 use quickwit_storage::StorageResolver;
@@ -31,6 +37,7 @@ use tracing::{info, warn};
 
 use crate::error::{IndexerError, Result};
 use crate::flatten_source::{FileFailure, flatten_files, list_odinson_files};
+use crate::lanes::{BatchPlan, lane_source_id, plan_batch};
 use crate::minio::MinioConfig;
 use crate::pipeline::PipelineRuntime;
 use crate::store::{IndexSummary, index_summary, open_metastore};
@@ -71,6 +78,11 @@ pub struct IndexerOptions {
     /// Threads for reading, decompressing, flattening and validating input (`0` = one per
     /// core, `1` = fully serial, as before parallel preparation existed).
     pub threads: usize,
+    /// Indexing pipelines run at once, each on its own Quickwit source (see [`crate::lanes`]).
+    /// One pipeline uses about two cores; more pipelines index batches concurrently. Whatever
+    /// the value, a re-run skips (or resumes) batches by their content, so it can change
+    /// between runs. Memory holds this many batches at once.
+    pub pipelines: usize,
 }
 
 impl IndexerOptions {
@@ -86,6 +98,7 @@ impl IndexerOptions {
             on_invalid_doc: InvalidDocPolicy::default(),
             split_num_docs_target: DEFAULT_SPLIT_NUM_DOCS_TARGET,
             threads: 0,
+            pipelines: 1,
         }
     }
 
@@ -100,6 +113,11 @@ impl IndexerOptions {
     fn validate(&self) -> Result<()> {
         if self.index_id.is_empty() {
             return Err(IndexerError::InvalidConfig("index_id is empty".into()));
+        }
+        if self.pipelines == 0 {
+            return Err(IndexerError::InvalidConfig(
+                "pipelines must be at least 1".into(),
+            ));
         }
         if self.split_num_docs_target == 0 {
             return Err(IndexerError::InvalidConfig(
@@ -482,35 +500,107 @@ impl Indexer {
         self.submit_prepared(prepared).await
     }
 
-    /// Hand validated documents to the indexing pipeline and wait for their splits.
-    async fn submit_prepared(&self, prepared: PreparedDocs) -> Result<IndexingStats> {
-        let mut stats = IndexingStats {
-            unmapped_fields: prepared.unmapped_fields,
+    /// Fails a batch holding rejected documents under [`InvalidDocPolicy::Fail`]; otherwise
+    /// returns the batch's stats so far (invalid and unmapped-field counts).
+    fn begin_batch(&self, prepared: &mut PreparedDocs) -> Result<IndexingStats> {
+        let stats = IndexingStats {
+            unmapped_fields: std::mem::take(&mut prepared.unmapped_fields),
             docs_invalid: prepared.num_invalid,
             ..Default::default()
         };
         if prepared.num_invalid > 0 && self.options.on_invalid_doc == InvalidDocPolicy::Fail {
             return Err(IndexerError::InvalidDocuments {
                 count: prepared.num_invalid,
-                sample: prepared.invalid_sample,
+                sample: std::mem::take(&mut prepared.invalid_sample),
             });
         }
         for message in &prepared.invalid_sample {
             warn!(%message, "dropping document rejected by the doc mapping");
         }
-        let docs = prepared.docs;
-        if docs.is_empty() {
+        Ok(stats)
+    }
+
+    /// What the checkpoints of all sources say about this batch.
+    async fn plan(&self, prepared: &PreparedDocs) -> Result<BatchPlan> {
+        let metadata = self.index_metadata().await?;
+        Ok(plan_batch(
+            &prepared.partition,
+            prepared.docs.len(),
+            &metadata.checkpoint,
+            metadata.sources.keys(),
+        ))
+    }
+
+    /// Stats of a batch that needed no indexing.
+    fn already_indexed(mut stats: IndexingStats, prepared: &PreparedDocs) -> IndexingStats {
+        stats.batches = 1;
+        stats.batches_already_indexed = 1;
+        stats.docs_submitted = prepared.docs.len() as u64;
+        stats
+    }
+
+    /// Register the additional lanes' sources (inert: disabled, void) when missing.
+    async fn ensure_lanes(&self) -> Result<()> {
+        let metadata = self.index_metadata().await?;
+        for lane in 1..self.options.pipelines {
+            let source_id = lane_source_id(lane);
+            if metadata.sources.contains_key(&source_id) {
+                continue;
+            }
+            let source_config = SourceConfig {
+                source_id: source_id.clone(),
+                num_pipelines: NonZeroUsize::MIN,
+                // Only ever driven by this indexer; a Quickwit node must not schedule it.
+                enabled: false,
+                source_params: SourceParams::void(),
+                transform_config: None,
+                input_format: SourceInputFormat::Json,
+            };
+            let request =
+                AddSourceRequest::try_from_source_config(metadata.index_uid.clone(), &source_config)
+                    .map_err(anyhow::Error::from)?;
+            match self.metastore.clone().add_source(request).await {
+                Ok(_) => info!(source_id, "registered indexing lane"),
+                // Lost a race with another process: fine.
+                Err(MetastoreError::AlreadyExists(_)) => {}
+                Err(err) => return Err(anyhow::Error::from(err).into()),
+            }
+        }
+        Ok(())
+    }
+
+    /// Hand validated documents to the indexing pipeline and wait for their splits, unless
+    /// their content was already indexed (by any lane).
+    async fn submit_prepared(&self, mut prepared: PreparedDocs) -> Result<IndexingStats> {
+        let stats = self.begin_batch(&mut prepared)?;
+        if prepared.docs.is_empty() {
             return Ok(stats);
         }
+        match self.plan(&prepared).await? {
+            BatchPlan::AlreadyIndexed => Ok(Self::already_indexed(stats, &prepared)),
+            BatchPlan::Resume(source_id) => self.run_on_lane(stats, prepared, &source_id).await,
+            BatchPlan::Fresh => {
+                self.run_on_lane(stats, prepared, &lane_source_id(0)).await
+            }
+        }
+    }
+
+    /// Run the batch through an indexing pipeline on the source `source_id` and wait until its
+    /// splits are published and its merges done.
+    async fn run_on_lane(
+        &self,
+        mut stats: IndexingStats,
+        prepared: PreparedDocs,
+        source_id: &str,
+    ) -> Result<IndexingStats> {
+        let docs = prepared.docs;
         let num_docs = docs.len() as u64;
-        let partition = prepared.partition;
         let source_config = SourceConfig {
-            // A default source registered on every index by `IndexService::create_index`.
-            source_id: CLI_SOURCE_ID.to_string(),
+            source_id: source_id.to_string(),
             num_pipelines: NonZeroUsize::MIN,
             enabled: true,
             source_params: SourceParams::Vec(VecSourceParams {
-                partition,
+                partition: prepared.partition,
                 docs,
                 batch_num_docs: self.options.source_batch_num_docs,
             }),
@@ -555,9 +645,9 @@ impl Indexer {
     /// a pipeline or storage failure aborts the run (earlier batches stay published).
     ///
     /// The next batches are read, flattened and validated (in parallel, see
-    /// [`IndexerOptions::threads`]) while the current one is being indexed. Batches are still
-    /// submitted one at a time, in file order, with the same content (hence the same
-    /// checkpoint) as a serial run.
+    /// [`IndexerOptions::threads`]) while earlier ones are being indexed, by up to
+    /// [`IndexerOptions::pipelines`] pipelines at once. Batches have the same content (hence the
+    /// same checkpoint) as in a serial run; only the order in which they finish may differ.
     pub async fn index_odinson_dir(
         &self,
         dir: &std::path::Path,
@@ -568,13 +658,19 @@ impl Indexer {
             return Err(IndexerError::InvalidConfig("batch_size must be > 0".into()));
         }
         self.ensure_index().await?;
+        self.ensure_lanes().await?;
 
         let dir = dir.to_path_buf();
         let files = tokio::task::spawn_blocking(move || list_odinson_files(&dir, limit))
             .await
             .map_err(|err| IndexerError::Pipeline(format!("file listing panicked: {err}")))??;
         let total_files = files.len();
-        info!(total_files, batch_size, "indexing Odinson files");
+        info!(
+            total_files,
+            batch_size,
+            pipelines = self.options.pipelines,
+            "indexing Odinson files"
+        );
 
         struct PreparedBatch {
             num_files: usize,
@@ -582,6 +678,18 @@ impl Indexer {
             failures: Vec<FileFailure>,
             prepared: PreparedDocs,
             flatten: Duration,
+        }
+        /// A received batch waiting for a lane, with the stats gathered so far.
+        struct Pending {
+            batch: PreparedBatch,
+            base: IndexingStats,
+        }
+        /// A lane's finished batch.
+        struct LaneDone {
+            lane: String,
+            partition: String,
+            base: IndexingStats,
+            result: Result<IndexingStats>,
         }
 
         let (tx, mut rx) = mpsc::channel::<PreparedBatch>(PREFETCH_BATCHES);
@@ -607,47 +715,169 @@ impl Indexer {
             }
         });
 
+        let lanes: Vec<String> = (0..self.options.pipelines).map(lane_source_id).collect();
         let started = Instant::now();
         let mut totals = IndexingStats::default();
+        let mut running: FuturesUnordered<BoxFuture<'_, LaneDone>> = FuturesUnordered::new();
+        // Lanes with a batch in flight, and the batches (by partition) they hold.
+        let mut busy: HashSet<String> = HashSet::new();
+        let mut in_flight: HashSet<String> = HashSet::new();
+        let mut pending: Option<Pending> = None;
+        let mut rx_open = true;
+        let mut halted = false;
+        let mut first_error: Option<IndexerError> = None;
+
         loop {
-            let waiting_since = Instant::now();
-            let Some(batch) = rx.recv().await else { break };
-            let input_wait = waiting_since.elapsed();
-            if self.stop.load(Ordering::SeqCst) {
+            if !halted && self.stop.load(Ordering::SeqCst) {
                 totals.interrupted = true;
-                warn!("stop requested; halting before next batch");
+                halted = true;
+                warn!("stop requested; halting before the next batch");
+            }
+
+            // Give the waiting batch a lane, or skip it if its content is already indexed.
+            if let Some(Pending { batch, base }) = pending.take() {
+                if halted {
+                    continue;
+                }
+                let partition = batch.prepared.partition.clone();
+                // Same content already running on a lane, or every lane busy: wait for one to
+                // finish (the batch will then read as indexed, or find a free lane).
+                let plan = if running.len() >= lanes.len() || in_flight.contains(&partition) {
+                    None
+                } else {
+                    match self.plan(&batch.prepared).await {
+                        Ok(plan) => Some(plan),
+                        Err(err) => {
+                            first_error.get_or_insert(err);
+                            halted = true;
+                            continue;
+                        }
+                    }
+                };
+                let lane = match &plan {
+                    None => None,
+                    Some(BatchPlan::AlreadyIndexed) => {
+                        totals.absorb(Self::already_indexed(base, &batch.prepared));
+                        info!(
+                            files = format_args!("{}/{}", totals.files_seen, total_files),
+                            "batch already indexed"
+                        );
+                        continue;
+                    }
+                    // Only the source holding the batch's progress can resume it.
+                    Some(BatchPlan::Resume(source_id)) => {
+                        (!busy.contains(source_id)).then(|| source_id.clone())
+                    }
+                    Some(BatchPlan::Fresh) => lanes.iter().find(|l| !busy.contains(*l)).cloned(),
+                };
+                match lane {
+                    None => pending = Some(Pending { batch, base }),
+                    Some(lane) => {
+                        busy.insert(lane.clone());
+                        in_flight.insert(partition.clone());
+                        let this = &*self;
+                        running.push(
+                            async move {
+                                let result = this
+                                    .run_on_lane(IndexingStats::default(), batch.prepared, &lane)
+                                    .await;
+                                LaneDone {
+                                    lane,
+                                    partition,
+                                    base,
+                                    result,
+                                }
+                            }
+                            .boxed(),
+                        );
+                    }
+                }
+            }
+
+            let can_take = pending.is_none() && !halted && rx_open;
+            if running.is_empty() && !can_take {
+                if pending.is_some() && !halted {
+                    return Err(IndexerError::Pipeline(
+                        "a batch is waiting for a lane but no lane is running".into(),
+                    ));
+                }
                 break;
             }
-            let mut batch_stats = IndexingStats {
-                files_seen: batch.num_files,
-                files_failed: batch.num_failed_files,
-                failures: batch.failures,
-                timings: PhaseTimings {
-                    flatten: batch.flatten,
-                    validate: batch.prepared.validate,
-                    partition_hash: batch.prepared.partition_hash,
-                    input_wait,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            batch_stats.absorb(self.submit_prepared(batch.prepared).await?);
-            totals.absorb(batch_stats);
 
-            let secs = started.elapsed().as_secs_f64().max(f64::EPSILON);
-            info!(
-                files = format_args!("{}/{}", totals.files_seen, total_files),
-                docs = totals.docs_processed,
-                invalid = totals.docs_invalid,
-                splits = totals.splits_published,
-                docs_per_sec = (totals.docs_processed as f64 / secs) as u64,
-                "batch done"
-            );
+            let idle_since = running.is_empty().then(Instant::now);
+            tokio::select! {
+                biased;
+                Some(done) = running.next(), if !running.is_empty() => {
+                    busy.remove(&done.lane);
+                    in_flight.remove(&done.partition);
+                    match done.result {
+                        Ok(stats) => {
+                            let mut batch_stats = done.base;
+                            batch_stats.absorb(stats);
+                            totals.absorb(batch_stats);
+                            let secs = started.elapsed().as_secs_f64().max(f64::EPSILON);
+                            info!(
+                                files = format_args!("{}/{}", totals.files_seen, total_files),
+                                docs = totals.docs_processed,
+                                invalid = totals.docs_invalid,
+                                splits = totals.splits_published,
+                                docs_per_sec = (totals.docs_processed as f64 / secs) as u64,
+                                lane = %done.lane,
+                                "batch done"
+                            );
+                        }
+                        Err(err) => {
+                            first_error.get_or_insert(err);
+                            halted = true;
+                        }
+                    }
+                }
+                received = rx.recv(), if can_take => {
+                    match received {
+                        Some(mut batch) => {
+                            let mut base = IndexingStats {
+                                files_seen: batch.num_files,
+                                files_failed: batch.num_failed_files,
+                                failures: std::mem::take(&mut batch.failures),
+                                timings: PhaseTimings {
+                                    flatten: batch.flatten,
+                                    validate: batch.prepared.validate,
+                                    partition_hash: batch.prepared.partition_hash,
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            };
+                            match self.begin_batch(&mut batch.prepared) {
+                                // Nothing to index (every file failed): just count the files.
+                                Ok(stats) if batch.prepared.docs.is_empty() => {
+                                    base.absorb(stats);
+                                    totals.absorb(base);
+                                }
+                                Ok(stats) => {
+                                    base.absorb(stats);
+                                    pending = Some(Pending { batch, base });
+                                }
+                                Err(err) => {
+                                    first_error.get_or_insert(err);
+                                    halted = true;
+                                }
+                            }
+                        }
+                        None => rx_open = false,
+                    }
+                }
+            }
+            if let Some(since) = idle_since {
+                totals.timings.input_wait += since.elapsed();
+            }
         }
         drop(rx);
         producer
             .await
             .map_err(|err| IndexerError::Pipeline(format!("flatten worker panicked: {err}")))?;
+        if let Some(err) = first_error {
+            return Err(err);
+        }
         totals
             .failures
             .truncate(crate::flatten_source::MAX_RECORDED_FAILURES);

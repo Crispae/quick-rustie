@@ -32,6 +32,7 @@ cargo run --release -p rustie-indexer --bin rustie-index -- --data "data/process
 | `--index-id` | `ie-postings` | |
 | `--metastore-uri` / `--index-root-uri` | `s3://<bucket>/metastore`, `s3://<bucket>/indexes` | |
 | `--threads` | 0 (all cores) | threads reading, decompressing, flattening and validating input; `1` = serial. Batch content, order and checkpoints are identical for any value |
+| `--pipelines` | 1 | indexing pipelines at once, each on its own Quickwit source ("lane"); each holds a batch in memory. Re-runs skip or resume batches by content in every lane, so the value may differ between runs |
 | `--split-num-docs-target` | 500000 | splits at or above this many documents are never merged again; applies when the index is created (`--overwrite` to change) |
 | `--data-dir` | temp dir | scratch for split building |
 | `--skip-invalid` | off | drop documents the mapping rejects instead of aborting |
@@ -89,15 +90,26 @@ indexer.shutdown().await;
   (checkpoint per batch), so an interrupt loses at most one batch of work, and it is held in
   memory: 500k sentences peak at about 7 GB with the fork's vec-source fix (rev containing
   `fix(indexing): create the vec source from its typed params`), about 17 GB without it.
+- **Lanes: several pipelines at once (`--pipelines N`).** One Quickwit pipeline uses about two
+  cores (its indexing thread is serial). With `N > 1` the indexer runs N pipelines concurrently,
+  each on its own Quickwit source (`rustie-lane-1`, …; lane 0 is the default CLI source).
+  Quickwit runs one merge pipeline per source and it only plans merges of its own source's
+  splits, so lanes cannot plan the same merge twice. Which lane indexed a batch is not part of
+  its identity: before submitting, the batch's content hash is looked up in *every* source's
+  checkpoint, so a re-run skips finished batches and resumes a partly published one on the lane
+  holding its progress, whatever `--pipelines` was before. Measured on PubMed (67,000-file
+  batches ≈ 500k sentences): 200k files 116 s with one lane, 54 s with three; the full corpus
+  (5.14M sentences, 660k files) in 2 min 12 s with four lanes (about 16 min originally), peak
+  memory 16 GB (a batch is held per lane). Results are identical: the same document count, and
+  12 test queries return the same totals as the serially built index. Each lane leaves a small
+  tail split per batch (a batch of ≥ 500k documents is cut at the target); tails are merged
+  only within their lane.
 - **Where indexing time goes.** Input preparation (read, gunzip, flatten, validate, hash) runs on
-  `--threads` threads and two batches ahead of the pipeline, so it is hidden (14 s serial vs 1.4 s
-  parallel on a 240k-sentence sample). What remains is Quickwit's pipeline (one indexing thread per
-  pipeline: about 2 of 20 cores in use). Stock Quickwit also spends about 25 µs per document
-  spawning a vec-source pipeline (it round-trips the documents through JSON); the fork fixes that.
-  The run's final line reports the breakdown. Merges are not overlapped with the next batch:
-  Quickwit shuts a merge pipeline down when no indexing pipeline is attached, so the next batch
-  could plan splits still being merged (the metastore rejects the stale publish atomically, so it
-  costs work, not correctness). Mature splits make this moot.
+  `--threads` threads and two batches ahead of the pipelines, so it is hidden (14 s serial vs
+  1.4 s parallel on a 240k-sentence sample). With one lane the rest is Quickwit's pipeline (about
+  2 of 20 cores). Stock Quickwit also spends about 25 µs per document spawning a vec-source
+  pipeline (it round-trips the documents through JSON); the fork fixes that. The run's final
+  line reports the breakdown (with several lanes the `indexing` figure sums the lanes).
 - **Single writer.** The file-backed metastore on S3 assumes one writer per metastore URI; do not run
   two indexers against the same metastore concurrently.
 
