@@ -23,7 +23,7 @@ rustie-query = { path = "../rustie-query" }
 rustie-schema = { path = "../rustie-schema" }
 
 # Extension points of the Quickwit fork (see docs/rustie-fork.md).
-quickwit-extensions = { path = "../../../quickwit-fork/quickwit/quickwit-extensions" }
+quickwit-extensions = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
 # `CacheNode`, wrapped around every `rustie` extension query (see `cache_wrapped_query_ast`).
 quickwit-query = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 # Same tantivy as the Quickwit fork (spec copied from its workspace), so queries and readers
