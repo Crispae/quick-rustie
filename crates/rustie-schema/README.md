@@ -5,9 +5,10 @@ Postings + dependency graph document model for RustIE-style indexing on **Quickw
 - Flatten Odinson JSON → one Quickwit document per sentence
 - Encode token arrays as `tok0|tok1|…` (aligned positions)
 - Capture `GraphField` edges/roots; store as JSON for **in-memory** traversal
-- Emit `incoming_edges` / `outgoing_edges` as per-sentence edge-label *sets* (`dobj|nsubj`, one
-  index term per label) for document-level prefilters
-- Emit a Quickwit index config (`doc_mapping` + `pipe_tokens`)
+- Emit `incoming_edges` / `outgoing_edges` per token (`|dobj,nsubj||`: one slot per token,
+  comma-joined labels, `root` on the root's incoming slot) for same-token prefilters
+- Emit a Quickwit index config (`doc_mapping` using the `rustie_tokens` / `rustie_edges`
+  tokenizers that `rustie_leaf::register()` installs)
 
 ## Example
 
@@ -26,11 +27,14 @@ let yaml = postings_index_config_yaml(&IndexConfigOptions::default());
 ## Index encoding decisions
 
 - **Token fields** keep RustIE's token-aware layout: one pipe-joined string per field, tokenized by
-  `pipe_tokens`, so the Tantivy position of a term is the token index. Sequences can therefore be
-  prefiltered with phrase queries. No `fast` columns by default (nothing reads them).
-- **Edge labels** are indexed as a label set, not per token: Quickwit tokenizers cannot place several
-  tokens at one position (RustIE's `edge_positions` tokenizer can), and comma-joined slots would hide
-  labels. Per-token structure lives in the stored `dependencies` JSON.
+  `rustie_tokens`, so the Tantivy position of a term is the token index. `|`, `,` and `\` inside a
+  token are escaped by `encode_tokens` and unescaped by the tokenizer (`slot_terms`). Sequences can
+  therefore be prefiltered with phrase queries. No `fast` columns by default (nothing reads them).
+- **Edge labels** are indexed per token by `rustie_edges`: each slot's comma-joined labels all land
+  at that slot's position, deduplicated. Quickwit's config tokenizers cannot place several terms at
+  one position, which is why the tokenizer is registered through the fork's hook. An empty slot
+  emits nothing but still advances the position, keeping every field aligned; `SentenceDoc::validate`
+  rejects a vector whose slot count differs from `sentence_length`.
 - **No `doc_id` tag**: Quickwit registers tag values only for ≤1000 distinct values per split.
 
 Regenerate the checked-in config with

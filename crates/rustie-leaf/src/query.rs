@@ -2,7 +2,9 @@
 //!
 //! Per split, the extension warmup (asynchronous, after Quickwit's own warmup):
 //! 1. evaluates the compiler's candidate filter on postings;
-//! 2. for a graph pattern, opens the split's GPH2 file and binds the plan to its dictionaries;
+//! 2. for a graph pattern, opens the split's GPH2 file and binds the plan to its dictionaries,
+//!    and keeps only candidates where one token satisfies each top-level `SameToken` node (an
+//!    endpoint's tests plus its hop label), on postings positions (`refine_same_token`);
 //! 3. expands every token test answered by postings to its terms, warming their positions;
 //! 4. fetches the sentence lengths (token patterns) or the graph blocks holding the candidates
 //!    (graph patterns).
@@ -38,7 +40,7 @@ use tantivy::schema::{IndexRecordOption, Schema};
 use tantivy::{DocId, DocSet, Score, Searcher, SegmentReader, TERMINATED, Term};
 
 use crate::blocks::SplitGraph;
-use crate::candidates::candidate_docs;
+use crate::candidates::{candidate_docs, refine_same_token};
 use crate::expand::expand_terms;
 
 /// Field holding each sentence's token count (a fast field in the IE mapping).
@@ -169,14 +171,22 @@ impl QueryExtension for RustieQueryExtension {
 }
 
 /// Terms every match contains: the top-level conjuncts of the candidate filter that are single
-/// terms. Quickwit skips a split outright when one of them is absent.
+/// terms, including the `Term` children of a top-level `SameToken`. Quickwit skips a split
+/// outright when one of them is absent.
+///
+/// A `SameToken`'s children are required because the compiler only builds one from a
+/// mandatory single-token graph endpoint (see `GraphCompiler::endpoint_candidate`); nothing
+/// under an `Or` is ever collected.
 fn required_terms(filter: &CandidateFilter, schema: &Schema) -> Vec<Term> {
-    let conjuncts: Vec<&CandidateFilter> = match filter {
+    let top: Vec<&CandidateFilter> = match filter {
         CandidateFilter::And(parts) => parts.iter().collect(),
         other => vec![other],
     };
+    let conjuncts = top.into_iter().flat_map(|part| match part {
+        CandidateFilter::SameToken(children) => children.iter().collect(),
+        other => vec![other],
+    });
     conjuncts
-        .into_iter()
         .filter_map(|part| match part {
             CandidateFilter::Term { field, value } => {
                 let field = schema.get_field(field).ok()?;
@@ -245,14 +255,15 @@ impl RustieWarmup {
         graph: Option<&SplitGraph>,
     ) -> anyhow::Result<SegmentPlan> {
         let started = Instant::now();
-        let candidates = candidate_docs(self.compiled.candidate(), reader, &self.schema)
+        let candidates_before_refine = candidate_docs(self.compiled.candidate(), reader, &self.schema)
             .await?
             .docs();
+        let candidates_before = candidates_before_refine.len();
         let candidates_took = started.elapsed();
         if self.compiled.exact {
             // Neither positions nor sentence lengths are read.
             return Ok(SegmentPlan {
-                candidates,
+                candidates: candidates_before_refine,
                 leaf_terms: Vec::new(),
                 graph: None,
             });
@@ -280,6 +291,21 @@ impl RustieWarmup {
                 (plan.external_leaves().to_vec(), Some(plan))
             }
         };
+        // Graph patterns only: narrow the candidates to those where one token actually satisfies
+        // a `SameToken` node, directly on postings positions — before any GPH2 block is fetched.
+        // Surface patterns read no blocks, so there is nothing for this to save there.
+        let candidates = if graph_segment.is_some() && *same_token_refine_enabled() {
+            refine_same_token(
+                self.compiled.candidate(),
+                reader,
+                &self.schema,
+                candidates_before_refine,
+            )
+            .await?
+        } else {
+            candidates_before_refine
+        };
+        let refine_took = started.elapsed() - candidates_took;
         if candidates.is_empty() {
             return Ok(SegmentPlan {
                 candidates,
@@ -300,12 +326,14 @@ impl RustieWarmup {
             leaf_terms.push(terms);
         }
 
-        let leaves_took = started.elapsed() - candidates_took;
+        let leaves_took = started.elapsed() - candidates_took - refine_took;
+        let mut blocks_fetched = 0usize;
         let graph = match (graph_segment, graph) {
-            (Some(plan), Some(graph)) => Some(GraphSegment {
-                plan,
-                blocks: graph.blocks_for_docs(&candidates).await?,
-            }),
+            (Some(plan), Some(graph)) => {
+                let blocks = graph.blocks_for_docs(&candidates).await?;
+                blocks_fetched = blocks.len();
+                Some(GraphSegment { plan, blocks })
+            }
             _ => {
                 // Token patterns need each sentence's length.
                 warm_fast_field(reader, SENTENCE_LENGTH_FIELD).await?;
@@ -314,10 +342,13 @@ impl RustieWarmup {
         };
         debug!(
             segment = %reader.segment_id().short_uuid_string(),
-            candidates = candidates.len(),
+            candidates_before,
+            candidates_after = candidates.len(),
+            blocks = blocks_fetched,
             candidates_ms = candidates_took.as_millis() as u64,
+            refine_ms = refine_took.as_millis() as u64,
             leaves_ms = leaves_took.as_millis() as u64,
-            graph_ms = (started.elapsed() - candidates_took - leaves_took).as_millis() as u64,
+            graph_ms = (started.elapsed() - candidates_took - refine_took - leaves_took).as_millis() as u64,
             "rustie segment warmed"
         );
         Ok(SegmentPlan {
@@ -326,6 +357,36 @@ impl RustieWarmup {
             graph,
         })
     }
+}
+
+/// `RUSTIE_SAME_TOKEN_REFINE=0` disables [`refine_same_token`] entirely (A/B against the
+/// document-level candidate set alone). Any other value, or unset, leaves it on.
+fn same_token_refine_enabled() -> &'static bool {
+    static ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var("RUSTIE_SAME_TOKEN_REFINE")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    });
+    match REFINE_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => &true,
+        2 => &false,
+        _ => &ENABLED,
+    }
+}
+
+/// 0 = follow `RUSTIE_SAME_TOKEN_REFINE`, 1 = force on, 2 = force off.
+static REFINE_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Test hook: force same-token refinement on or off (`None` = back to the environment), so one
+/// test process can compare both without racing on a process-wide environment variable.
+#[doc(hidden)]
+pub fn set_same_token_refine(enabled: Option<bool>) {
+    let value = match enabled {
+        None => 0,
+        Some(true) => 1,
+        Some(false) => 2,
+    };
+    REFINE_OVERRIDE.store(value, std::sync::atomic::Ordering::Relaxed);
 }
 
 async fn warm_fast_field(reader: &SegmentReader, name: &str) -> anyhow::Result<()> {
@@ -534,5 +595,38 @@ impl DocSet for RustieScorer {
 impl Scorer for RustieScorer {
     fn score(&mut self) -> Score {
         1.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tantivy::schema::TEXT;
+
+    #[test]
+    fn required_terms_include_top_level_same_token_children_only() {
+        let mut builder = Schema::builder();
+        let word = builder.add_text_field("word", TEXT);
+        let incoming = builder.add_text_field("incoming_edges", TEXT);
+        let schema = builder.build();
+
+        let filter = CandidateFilter::And(vec![
+            CandidateFilter::SameToken(vec![
+                CandidateFilter::term("word", "cat"),
+                CandidateFilter::term("incoming_edges", "nsubj"),
+            ]),
+            // Any one alternative may hold: none is required.
+            CandidateFilter::Or(vec![
+                CandidateFilter::SameToken(vec![CandidateFilter::term("word", "dog")]),
+                CandidateFilter::term("word", "bird"),
+            ]),
+        ]);
+        assert_eq!(
+            required_terms(&filter, &schema),
+            [
+                Term::from_field_text(word, "cat"),
+                Term::from_field_text(incoming, "nsubj"),
+            ]
+        );
     }
 }

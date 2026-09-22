@@ -1062,6 +1062,8 @@ mod tests {
 
     #[test]
     fn generated_config_matches_configs_ie_postings_yaml() {
+        // Loading the config validates its doc mapping, which needs `rustie_tokens` registered.
+        rustie_leaf::register();
         let opts = IndexerOptions::for_bucket("rustie-dev");
         let generated = build_index_config(&opts).unwrap();
 
@@ -1086,6 +1088,9 @@ mod tests {
 
     #[test]
     fn prepare_drops_unmapped_fields_and_rejects_bad_types() {
+        // `word`/`lemma`/… reference `rustie_tokens`, registered by this call (see
+        // `crates/rustie-leaf/src/lib.rs`), not declared in the mapping's own `tokenizers:`.
+        rustie_leaf::register();
         let opts = IndexerOptions::for_bucket("b");
         let config = build_index_config(&opts).unwrap();
         let mapper = build_doc_mapper(&config.doc_mapping, &config.search_settings).unwrap();
@@ -1121,6 +1126,7 @@ mod tests {
 
     #[test]
     fn parallel_prepare_equals_serial_in_any_pool_size() {
+        rustie_leaf::register();
         let opts = IndexerOptions::for_bucket("b");
         let config = build_index_config(&opts).unwrap();
         let mapper = build_doc_mapper(&config.doc_mapping, &config.search_settings).unwrap();
