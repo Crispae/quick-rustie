@@ -21,7 +21,7 @@ mod expand;
 mod query;
 mod sidecar;
 
-pub use query::{PatternPayload, RustieQueryExtension};
+pub use query::{PatternPayload, RustieQueryExtension, cache_wrapped_query_ast};
 pub use sidecar::GraphSidecar;
 
 /// File name of the graph component inside a split.

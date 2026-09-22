@@ -6,7 +6,6 @@ use std::collections::{BTreeSet, HashMap};
 
 use quickwit_indexing::TestSandbox;
 use quickwit_proto::search::SearchRequest;
-use quickwit_query::query_ast::{ExtensionQuery, QueryAst};
 use quickwit_search::single_node_search;
 use rustie_compiler::matching::SpanProg;
 use rustie_compiler::{CompiledQuery, DEFAULT_SENTENCE_CAP, QueryCompiler, evaluate_on_sentence};
@@ -139,10 +138,12 @@ async fn search(
     pattern: &str,
     max_hits: u64,
 ) -> anyhow::Result<(u64, BTreeSet<String>)> {
-    let query_ast = QueryAst::Extension(ExtensionQuery {
-        kind: rustie_leaf::QUERY_KIND.to_string(),
-        payload: json!({ "pattern": pattern }),
-    });
+    // Routed through the same CacheNode-wrapped AST production code sends (`search_inner` in
+    // rustie-search): every call here is a fresh miss (`single_node_search` builds a new,
+    // empty `SearcherContext` each time), so this exercises `CacheFillerWeight`'s eager-drain
+    // path across every pattern below and confirms it still returns exactly the reference
+    // evaluator's answer.
+    let query_ast = rustie_leaf::cache_wrapped_query_ast(pattern);
     let response = single_node_search(
         SearchRequest {
             index_id_patterns: vec!["rustie-leaf".to_string()],

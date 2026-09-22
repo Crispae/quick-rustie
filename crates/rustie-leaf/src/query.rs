@@ -20,6 +20,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use lru::LruCache;
 use quickwit_extensions::{ExtensionQueryBuild, ExtensionWarmup, QueryExtension};
+use quickwit_query::query_ast::{CacheNode, ExtensionQuery, QueryAst};
 use rustie_compiler::{
     BoundPlan, BoundSurface, CandidateFilter, CompiledQuery, EvalScratch, LeafSource,
     QueryCompiler, TokenSet,
@@ -63,6 +64,29 @@ impl PatternPayload {
             pattern: pattern.to_string(),
         })
     }
+}
+
+/// The `rustie` extension query for `pattern`, wrapped in Quickwit's predicate cache
+/// (`quickwit_query::query_ast::CacheNode`). Every split's leaf search consults
+/// `SearcherContext::predicate_cache` keyed on `(split_id, json(inner_ast))`: a hit replays a
+/// previously-computed, fully-verified match set (`RustieScorer`'s `DocSet` already yields exact
+/// matches, post graph verification, not just a postings candidate set) without opening GPH2,
+/// evaluating candidates, or running graph scoring again; a miss runs the extension normally and
+/// fills the cache.
+///
+/// Applied unconditionally, matching RustIE's other always-on caches (the compiled-query LRU,
+/// the GPH2 trailer/block LRUs). Tradeoff: on a miss, Quickwit's `CacheFillerWeight` drains the
+/// inner scorer to completion before returning anything to the collector, so the first run of a
+/// new pattern loses whatever early-stop a doc-id-ordered page would normally get — only repeats
+/// of an identical pattern against an unchanged split become nearly free.
+pub fn cache_wrapped_query_ast(pattern: &str) -> QueryAst {
+    QueryAst::Cache(CacheNode::new(QueryAst::Extension(ExtensionQuery {
+        kind: crate::QUERY_KIND.to_string(),
+        payload: PatternPayload {
+            pattern: pattern.to_string(),
+        }
+        .to_json(),
+    })))
 }
 
 /// A compiled pattern, shared by every split a query touches.

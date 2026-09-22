@@ -17,12 +17,15 @@ path = "src/bin/rustie-serve.rs"
 [dependencies]
 anyhow = "1"
 axum = "0.8"
+bytesize = "2.7.0"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 rustie-compiler = { path = "../rustie-compiler" }
 rustie-indexer = { path = "../rustie-indexer" }

@@ -24,6 +24,8 @@ rustie-schema = { path = "../rustie-schema" }
 
 # Extension points of the Quickwit fork (see docs/rustie-fork.md).
 quickwit-extensions = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
+# `CacheNode`, wrapped around every `rustie` extension query (see `cache_wrapped_query_ast`).
+quickwit-query = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 # Same tantivy as the Quickwit fork (spec copied from its workspace), so queries and readers
 # are the same types.
 tantivy = { git = "https://github.com/quickwit-oss/tantivy/", rev = "057458b", default-features = false, features = [
@@ -39,7 +41,9 @@ serde_yaml = "0.9"
 tempfile = "3"
 tokio = { version = "=1.52.3", features = ["full"] }
 
+quickwit-config = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 quickwit-indexing = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0", features = ["testsuite"] }
+quickwit-metastore = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 quickwit-proto = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
-quickwit-query = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 quickwit-search = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-storage = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }

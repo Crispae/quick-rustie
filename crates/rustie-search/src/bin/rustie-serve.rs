@@ -6,6 +6,7 @@
 //! ```
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,6 +52,33 @@ struct Args {
     timeout_secs: u64,
     #[arg(long, default_value_t = 16)]
     max_concurrent_searches: usize,
+
+    /// Byte budget (MB) of Quickwit's in-memory fast-field cache.
+    #[arg(long, default_value_t = 1024)]
+    fast_field_cache_mb: u64,
+    /// Byte budget (MB) of the split-footer (file-bundle metadata + hotcache) cache.
+    #[arg(long, default_value_t = 500)]
+    split_footer_cache_mb: u64,
+    /// Byte budget (MB) of the per-split partial-result cache.
+    #[arg(long, default_value_t = 64)]
+    partial_request_cache_mb: u64,
+    /// Byte budget (MB) of the predicate cache (memoizes each split's exact match set per
+    /// pattern, so a repeated query skips GPH2 and graph scoring entirely).
+    #[arg(long, default_value_t = 256)]
+    predicate_cache_mb: u64,
+
+    /// Enables the on-disk split cache at this directory: whole `.split` files are kept
+    /// between queries and across restarts. Unset (default): every query re-fetches split
+    /// data from object storage.
+    #[arg(long)]
+    split_cache_dir: Option<PathBuf>,
+    /// Byte budget (MB) of the on-disk split cache. Only used when `--split-cache-dir` is set.
+    #[arg(long, default_value_t = 10_000)]
+    split_cache_max_mb: u64,
+    /// Max number of splits held in the on-disk split cache. Only used when
+    /// `--split-cache-dir` is set.
+    #[arg(long, default_value_t = 10_000)]
+    split_cache_max_splits: u32,
 }
 
 fn main() -> ExitCode {
@@ -99,6 +127,14 @@ async fn run(args: Args) -> anyhow::Result<()> {
     options.timeout = Duration::from_secs(args.timeout_secs);
     if let Some(uri) = args.metastore_uri {
         options.metastore_uri = uri;
+    }
+    options.fast_field_cache_mb = args.fast_field_cache_mb;
+    options.split_footer_cache_mb = args.split_footer_cache_mb;
+    options.partial_request_cache_mb = args.partial_request_cache_mb;
+    options.predicate_cache_mb = args.predicate_cache_mb;
+    if let Some(dir) = args.split_cache_dir {
+        options =
+            options.with_split_cache(dir, args.split_cache_max_mb, args.split_cache_max_splits)?;
     }
 
     let searcher = Arc::new(Searcher::connect(minio, options).await?);

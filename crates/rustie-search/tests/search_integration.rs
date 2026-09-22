@@ -265,3 +265,77 @@ async fn queries(searcher: Arc<Searcher>) {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+/// Smoke check for the on-disk split cache: enabling it must create and populate its directory.
+/// Not a hit/miss assertion — `SearchSplitCache`'s internals aren't visible from outside
+/// `quickwit-storage` — just proof the wiring in `Searcher::connect` actually takes effect.
+#[tokio::test]
+#[ignore = "needs MinIO; set RUSTIE_MINIO_TEST=1"]
+async fn split_cache_directory_is_populated() {
+    if std::env::var("RUSTIE_MINIO_TEST").as_deref() != Ok("1") {
+        eprintln!("RUSTIE_MINIO_TEST!=1, skipping");
+        return;
+    }
+    let minio = MinioConfig::from_env();
+    let unique = format!(
+        "it-split-cache-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+    let mut indexer_options = IndexerOptions::for_bucket(&minio.bucket);
+    indexer_options.index_id = format!("ie-postings-{unique}");
+    indexer_options.metastore_uri = format!("s3://{}/{unique}/metastore", minio.bucket);
+    indexer_options.index_root_uri = format!("s3://{}/{unique}/indexes", minio.bucket);
+
+    let docs_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        docs_dir.path().join("a.json"),
+        odinson_doc("a", &["John", "runs", "fast"], &["NNP", "VBZ", "RB"]),
+    )
+    .unwrap();
+
+    let indexer = Indexer::connect(minio.clone(), indexer_options.clone())
+        .await
+        .unwrap();
+    let indexed = indexer.index_odinson_dir(docs_dir.path(), None, 10).await;
+    let outcome = match indexed {
+        Ok(stats) => {
+            assert_eq!(stats.docs_processed, 1);
+            let split_cache_dir = tempfile::tempdir().unwrap();
+            let mut options = SearcherOptions::for_bucket(&minio.bucket);
+            options.index_id = indexer_options.index_id.clone();
+            options.metastore_uri = indexer_options.metastore_uri.clone();
+            options = options
+                .with_split_cache(split_cache_dir.path().to_path_buf(), 100, 100)
+                .unwrap();
+            let searcher = Searcher::connect(minio.clone(), options).await.unwrap();
+            let result = searcher.search(SearchQuery::new("[word=John]")).await;
+            // The split cache's downloader is a background task (see `download_task.rs`) that
+            // polls for candidates once a second when idle, then copies the split from MinIO:
+            // poll for it to land rather than checking once immediately after the search.
+            let mut populated = false;
+            for _ in 0..30 {
+                populated = std::fs::read_dir(split_cache_dir.path())
+                    .map(|entries| entries.count() > 0)
+                    .unwrap_or(false);
+                if populated {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            result.map(|r| (r, populated))
+        }
+        Err(err) => panic!("indexing failed: {err}"),
+    };
+    let _ = indexer.delete_index().await;
+    indexer.shutdown().await;
+    let (response, populated) = outcome.unwrap();
+    assert_eq!(response.hits.len(), 1);
+    assert!(
+        populated,
+        "split cache directory must hold at least one file after a query"
+    );
+}

@@ -1,9 +1,10 @@
 //! Request / response types of the search API (also the JSON schema of the HTTP API).
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// A RustIE / Odinson pattern plus paging controls.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct SearchQuery {
     /// Pattern, e.g. `[word=John] >nsubj [pos=VBZ]`.
     pub query: String,
@@ -46,7 +47,7 @@ impl SearchQuery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryKind {
     /// Token pattern only.
@@ -55,7 +56,7 @@ pub enum QueryKind {
     Graph,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct CaptureOut {
     pub name: String,
     pub start: usize,
@@ -65,7 +66,7 @@ pub struct CaptureOut {
 }
 
 /// A matched token span (`end` exclusive).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct SpanOut {
     pub start: usize,
     pub end: usize,
@@ -75,12 +76,12 @@ pub struct SpanOut {
 
 /// One match inside a sentence: a single span for surface patterns, one span per
 /// traversal endpoint (in pattern order) for graph patterns.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct MatchOut {
     pub spans: Vec<SpanOut>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct SentenceHit {
     pub doc_id: String,
     pub sentence_id: String,
@@ -89,7 +90,7 @@ pub struct SentenceHit {
     pub matches: Vec<MatchOut>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SearchResults {
     pub query: String,
     pub kind: QueryKind,
@@ -106,10 +107,16 @@ pub struct SearchResults {
 }
 
 /// Wall-clock split of one search, in microseconds.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
 pub struct Timing {
     /// Quickwit search: matching inside the splits and fetching the page's documents.
     pub backend_us: u64,
     /// Rendering the matched spans of the page.
     pub render_us: u64,
+}
+
+/// Shape of every non-2xx JSON response.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ErrorBody {
+    pub error: String,
 }
