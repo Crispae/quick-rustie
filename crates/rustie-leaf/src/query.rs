@@ -9,6 +9,12 @@
 //! 4. fetches the sentence lengths (token patterns) or the graph blocks holding the candidates
 //!    (graph patterns).
 //!
+//! Steps 1-3 all resolve `(field, test)` pairs against the term dictionary through one
+//! `SegmentTerms` per segment (`crate::expand`): the same endpoint constraint is often both a
+//! `SameToken` child (step 2) and an `ExternalLeaf` (step 3), and resolving it once instead of
+//! twice matters most for a regex with no fixed prefix, which the dictionary can only answer by
+//! a full scan.
+//!
 //! The scorer (synchronous, on that local data) then walks the candidates and yields only the
 //! documents the pattern matches exactly. When the postings already decide the match (one token
 //! test, or alternatives of them), steps 3 and 4 are skipped and the candidates are the answer.
@@ -41,7 +47,7 @@ use tantivy::{DocId, DocSet, Score, Searcher, SegmentReader, TERMINATED, Term};
 
 use crate::blocks::SplitGraph;
 use crate::candidates::{candidate_docs, refine_same_token};
-use crate::expand::expand_terms;
+use crate::expand::SegmentTerms;
 
 /// Field holding each sentence's token count (a fast field in the IE mapping).
 const SENTENCE_LENGTH_FIELD: &str = "sentence_length";
@@ -255,9 +261,15 @@ impl RustieWarmup {
         graph: Option<&SplitGraph>,
     ) -> anyhow::Result<SegmentPlan> {
         let started = Instant::now();
-        let candidates_before_refine = candidate_docs(self.compiled.candidate(), reader, &self.schema)
-            .await?
-            .docs();
+        // Shared for the life of this segment's warmup: a `(field, test)` pair resolved for the
+        // candidate filter, refinement or an external leaf is resolved once and reused by
+        // whichever of the other two also needs it (the same endpoint constraint commonly feeds
+        // both a `SameToken` child and an `ExternalLeaf`).
+        let segment_terms = SegmentTerms::new(reader);
+        let candidates_before_refine =
+            candidate_docs(self.compiled.candidate(), &segment_terms, reader, &self.schema)
+                .await?
+                .docs();
         let candidates_before = candidates_before_refine.len();
         let candidates_took = started.elapsed();
         if self.compiled.exact {
@@ -297,6 +309,7 @@ impl RustieWarmup {
         let candidates = if graph_segment.is_some() && *same_token_refine_enabled() {
             refine_same_token(
                 self.compiled.candidate(),
+                &segment_terms,
                 reader,
                 &self.schema,
                 candidates_before_refine,
@@ -318,8 +331,9 @@ impl RustieWarmup {
         for leaf in &leaves {
             let terms = match self.schema.get_field(&leaf.field) {
                 Ok(field) if self.schema.get_field_entry(field).is_indexed() => {
-                    let inverted_index = reader.inverted_index(field)?;
-                    expand_terms(&inverted_index, field, &leaf.test, true).await?
+                    let resolved = segment_terms.resolve(field, &leaf.test).await?;
+                    segment_terms.warm_positions(field, &resolved).await?;
+                    resolved.terms().cloned().collect()
                 }
                 _ => Vec::new(),
             };
@@ -340,11 +354,14 @@ impl RustieWarmup {
                 None
             }
         };
+        let (terms_resolved, position_groups) = segment_terms.stats();
         debug!(
             segment = %reader.segment_id().short_uuid_string(),
             candidates_before,
             candidates_after = candidates.len(),
             blocks = blocks_fetched,
+            terms_resolved,
+            position_groups,
             candidates_ms = candidates_took.as_millis() as u64,
             refine_ms = refine_took.as_millis() as u64,
             leaves_ms = leaves_took.as_millis() as u64,

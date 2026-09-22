@@ -6,10 +6,10 @@ use std::sync::LazyLock;
 use rustie_compiler::matching::node_test::anchor;
 use rustie_compiler::{CandidateFilter, LeafTest};
 use tantivy::postings::{Postings, SegmentPostings};
-use tantivy::schema::{IndexRecordOption, Schema};
+use tantivy::schema::{Field, IndexRecordOption, Schema};
 use tantivy::{DocId, DocSet, SegmentReader, TERMINATED};
 
-use crate::expand::expand_terms;
+use crate::expand::SegmentTerms;
 
 /// A set of document ids of one segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,9 +67,12 @@ impl DocBits {
     }
 }
 
-/// Documents of `reader` that `filter` admits. Warms (and reads) the postings it needs.
+/// Documents of `reader` that `filter` admits. Warms (and reads) the postings it needs, through
+/// `terms` so a `(field, test)` pair resolved here is reused by `refine_same_token` and the
+/// external-leaf resolution in `query.rs`, instead of walking the dictionary again.
 pub(crate) fn candidate_docs<'a>(
     filter: &'a CandidateFilter,
+    terms: &'a SegmentTerms<'a>,
     reader: &'a SegmentReader,
     schema: &'a Schema,
 ) -> futures::future::BoxFuture<'a, anyhow::Result<DocBits>> {
@@ -78,19 +81,20 @@ pub(crate) fn candidate_docs<'a>(
         Ok(match filter {
             CandidateFilter::All => DocBits::full(max_doc),
             CandidateFilter::Term { field, value } => {
-                docs_of_test(field, &LeafTest::Exact(value.clone()), reader, schema).await?
+                docs_of_test(field, &LeafTest::Exact(value.clone()), terms, reader, schema).await?
             }
             CandidateFilter::Regex { field, pattern } => {
                 let regex = regex::Regex::new(pattern)
                     .map_err(|err| anyhow::anyhow!("invalid regex `{pattern}`: {err}"))?;
-                docs_of_test(field, &LeafTest::Regex(anchor(&regex)), reader, schema).await?
+                docs_of_test(field, &LeafTest::Regex(anchor(&regex)), terms, reader, schema).await?
             }
             // Adjacency is verified by the exact matcher; here every term must be present.
-            CandidateFilter::Phrase { field, terms } => {
+            CandidateFilter::Phrase { field, terms: values } => {
                 let mut acc = DocBits::full(max_doc);
-                for value in terms {
-                    let docs = docs_of_test(field, &LeafTest::Exact(value.clone()), reader, schema)
-                        .await?;
+                for value in values {
+                    let docs =
+                        docs_of_test(field, &LeafTest::Exact(value.clone()), terms, reader, schema)
+                            .await?;
                     acc.and(&docs);
                 }
                 acc
@@ -98,14 +102,14 @@ pub(crate) fn candidate_docs<'a>(
             CandidateFilter::And(parts) => {
                 let mut acc = DocBits::full(max_doc);
                 for part in parts {
-                    acc.and(&candidate_docs(part, reader, schema).await?);
+                    acc.and(&candidate_docs(part, terms, reader, schema).await?);
                 }
                 acc
             }
             CandidateFilter::Or(parts) => {
                 let mut acc = DocBits::empty(max_doc);
                 for part in parts {
-                    acc.or(&candidate_docs(part, reader, schema).await?);
+                    acc.or(&candidate_docs(part, terms, reader, schema).await?);
                 }
                 acc
             }
@@ -115,7 +119,7 @@ pub(crate) fn candidate_docs<'a>(
             CandidateFilter::SameToken(parts) => {
                 let mut acc = DocBits::full(max_doc);
                 for part in parts {
-                    acc.and(&candidate_docs(part, reader, schema).await?);
+                    acc.and(&candidate_docs(part, terms, reader, schema).await?);
                 }
                 acc
             }
@@ -139,12 +143,18 @@ fn refine_max_df_ratio() -> f64 {
     *RATIO
 }
 
-/// One child of a `SameToken` node: every expanded term's postings (opened with positions), and
-/// their summed doc frequency (an upper bound on how many documents this child alone admits,
-/// used both for the cost guard and to check the rarest child first).
+/// One child of a `SameToken` node, positions warmed and postings opened: every expanded term's
+/// postings. Built only after the cost guard passes (see [`refine_same_token_with`]), so a
+/// skipped node never warms a position it won't use.
 struct SameTokenChild {
     postings: Vec<SegmentPostings>,
-    doc_freq: u64,
+}
+
+/// A `SameToken` child resolved but not yet warmed for positions: its field and its dictionary
+/// resolution (postings warm, `doc_freq` available with no further I/O).
+struct PreparedChild {
+    field: Field,
+    resolved: std::sync::Arc<crate::expand::Resolved>,
 }
 
 /// `filter`'s `Term`/`Regex` translated to a field + [`LeafTest`], the same conversion
@@ -161,33 +171,30 @@ fn field_and_test(filter: &CandidateFilter) -> anyhow::Result<(&str, LeafTest)> 
     }
 }
 
-/// Opens `child`'s postings with positions, or `None` when this split can't answer a same-token
-/// check for it: the field is absent (an old split, or one without this field at all) or was
-/// indexed without positions (`record: basic`, the pre-`rustie_edges` edge-field mapping).
+/// Resolves `child`'s terms (postings warm, no positions yet), or `None` when this split can't
+/// answer a same-token check for it: the field is absent (an old split, or one without this field
+/// at all) or was indexed without positions (`record: basic`, the pre-`rustie_edges` edge-field
+/// mapping).
 async fn prepare_same_token_child(
     filter: &CandidateFilter,
-    reader: &SegmentReader,
+    terms: &SegmentTerms<'_>,
     schema: &Schema,
-) -> anyhow::Result<Option<SameTokenChild>> {
+) -> anyhow::Result<Option<PreparedChild>> {
     let (field_name, test) = field_and_test(filter)?;
     let Ok(field) = schema.get_field(field_name) else {
         return Ok(None);
     };
     let entry = schema.get_field_entry(field);
-    if !entry.is_indexed() || !entry.field_type().get_index_record_option().is_some_and(|o| o.has_positions()) {
+    if !entry.is_indexed()
+        || !entry
+            .field_type()
+            .get_index_record_option()
+            .is_some_and(|o| o.has_positions())
+    {
         return Ok(None);
     }
-    let inverted_index = reader.inverted_index(field)?;
-    let terms = expand_terms(&inverted_index, field, &test, true).await?;
-    let mut postings = Vec::with_capacity(terms.len());
-    let mut doc_freq: u64 = 0;
-    for term in &terms {
-        if let Some(p) = inverted_index.read_postings(term, IndexRecordOption::WithFreqsAndPositions)? {
-            doc_freq += u64::from(p.doc_freq());
-            postings.push(p);
-        }
-    }
-    Ok(Some(SameTokenChild { postings, doc_freq }))
+    let resolved = terms.resolve(field, &test).await?;
+    Ok(Some(PreparedChild { field, resolved }))
 }
 
 /// This child's token positions in `doc` (the union over all its expanded terms), or `false` if
@@ -273,17 +280,19 @@ fn top_level_same_tokens(filter: &CandidateFilter) -> Vec<&Vec<CandidateFilter>>
 /// other than a `SameToken`, and anything nested under `Or`, are left to the exact matcher.
 pub(crate) async fn refine_same_token(
     filter: &CandidateFilter,
+    terms: &SegmentTerms<'_>,
     reader: &SegmentReader,
     schema: &Schema,
     docs: Vec<DocId>,
 ) -> anyhow::Result<Vec<DocId>> {
-    refine_same_token_with(filter, reader, schema, docs, refine_max_df_ratio()).await
+    refine_same_token_with(filter, terms, reader, schema, docs, refine_max_df_ratio()).await
 }
 
 /// [`refine_same_token`] with an explicit cost-guard threshold (tests pass their own, instead of
 /// racing on the process-wide `RUSTIE_REFINE_MAX_DF_RATIO`).
 async fn refine_same_token_with(
     filter: &CandidateFilter,
+    terms: &SegmentTerms<'_>,
     reader: &SegmentReader,
     schema: &Schema,
     mut docs: Vec<DocId>,
@@ -295,10 +304,11 @@ async fn refine_same_token_with(
         if docs.is_empty() {
             break;
         }
+        // Phase 1: resolve every child (dictionary walk + postings warm only, no positions).
         let mut prepared = Vec::with_capacity(children.len());
         let mut skip = false;
         for child in children {
-            match prepare_same_token_child(child, reader, schema).await? {
+            match prepare_same_token_child(child, terms, schema).await? {
                 Some(c) => prepared.push(c),
                 None => {
                     skip = true;
@@ -309,8 +319,12 @@ async fn refine_same_token_with(
         if skip {
             continue;
         }
-        prepared.sort_by_key(|c| c.doc_freq);
-        let rarest_ratio = prepared.first().map_or(0.0, |c| c.doc_freq as f64 / max_doc.max(1.0));
+        // Phase 2: the cost guard, from each child's already-local `doc_freq` — before warming
+        // any position.
+        prepared.sort_by_key(|c| c.resolved.doc_freq());
+        let rarest_ratio = prepared
+            .first()
+            .map_or(0.0, |c| c.resolved.doc_freq() as f64 / max_doc.max(1.0));
         if rarest_ratio > max_df_ratio {
             tracing::debug!(
                 rarest_ratio,
@@ -319,9 +333,24 @@ async fn refine_same_token_with(
             );
             continue;
         }
+        // Phase 3: now that the node is worth it, warm positions and open postings.
+        let mut same_token_children = Vec::with_capacity(prepared.len());
+        for child in &prepared {
+            terms.warm_positions(child.field, &child.resolved).await?;
+            let inverted_index = reader.inverted_index(child.field)?;
+            let mut postings = Vec::with_capacity(child.resolved.len());
+            for term in child.resolved.terms() {
+                if let Some(p) =
+                    inverted_index.read_postings(term, IndexRecordOption::WithFreqsAndPositions)?
+                {
+                    postings.push(p);
+                }
+            }
+            same_token_children.push(SameTokenChild { postings });
+        }
         let mut buf = Vec::new();
         let mut acc = Vec::new();
-        docs.retain(|&doc| doc_has_same_token(&mut prepared, doc, &mut buf, &mut acc));
+        docs.retain(|&doc| doc_has_same_token(&mut same_token_children, doc, &mut buf, &mut acc));
     }
     Ok(docs)
 }
@@ -329,6 +358,7 @@ async fn refine_same_token_with(
 async fn docs_of_test(
     field_name: &str,
     test: &LeafTest,
+    terms: &SegmentTerms<'_>,
     reader: &SegmentReader,
     schema: &Schema,
 ) -> anyhow::Result<DocBits> {
@@ -341,8 +371,9 @@ async fn docs_of_test(
         return Ok(bits);
     }
     let inverted_index = reader.inverted_index(field)?;
-    for term in expand_terms(&inverted_index, field, test, false).await? {
-        if let Some(mut postings) = inverted_index.read_postings(&term, IndexRecordOption::Basic)? {
+    let resolved = terms.resolve(field, test).await?;
+    for term in resolved.terms() {
+        if let Some(mut postings) = inverted_index.read_postings(term, IndexRecordOption::Basic)? {
             while postings.doc() != TERMINATED {
                 bits.insert(postings.doc());
                 postings.advance();
@@ -440,7 +471,10 @@ mod tests {
     async fn refine(filter: &CandidateFilter, ratio: f64) -> Vec<DocId> {
         let (index, reader) = slot_index(&DOCS);
         let searcher = reader.searcher();
-        refine_same_token_with(filter, searcher.segment_reader(0), &index.schema(), vec![0, 1, 2], ratio)
+        let segment_reader = searcher.segment_reader(0);
+        let schema = index.schema();
+        let terms = SegmentTerms::new(segment_reader);
+        refine_same_token_with(filter, &terms, segment_reader, &schema, vec![0, 1, 2], ratio)
             .await
             .unwrap()
     }
