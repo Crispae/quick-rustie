@@ -89,7 +89,7 @@ redirected to it, at a pinned commit, by the `[patch]` section of the root `Carg
 - `rustie-graph-store`: round trips, spool = in-memory encoding, merge with deletes and missing
   components.
 - Fork: sidecar rows follow document ids through indexing, merge and delete-and-merge.
-- `rustie-leaf/tests/leaf_search.rs`: 20 token and graph patterns over three real splits vs the
+- `rustie-leaf/test/unit/leaf_search.rs`: 20 token and graph patterns over three real splits vs the
   reference evaluator, including exact `num_hits` and paging.
 - On the PubMed sample (127,052 sentences, 8 merged splits), results equal a Python oracle over
   the raw JSON for every page size.

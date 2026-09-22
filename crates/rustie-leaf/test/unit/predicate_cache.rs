@@ -32,9 +32,7 @@ fn doc_mapping_yaml() -> String {
 /// `[tag=VBD] >nsubj [word=cat]` — a graph pattern, so a hit is a meaningful claim about GPH2 —
 /// matches it.
 fn odinson_doc(id: &str) -> String {
-    let field = |name: &str, values: &[&str]| {
-        json!({"name": name, "$type": "ai.lum.odinson.TokensField", "tokens": values})
-    };
+    let field = |name: &str, values: &[&str]| json!({"name": name, "$type": "ai.lum.odinson.TokensField", "tokens": values});
     json!({
         "id": id,
         "sentences": [{
@@ -168,7 +166,10 @@ async fn repeated_pattern_hits_predicate_cache() -> anyhow::Result<()> {
         "second call failed: {:?}",
         second.failed_splits
     );
-    assert_eq!(second.num_hits, first.num_hits, "a hit must return the same count");
+    assert_eq!(
+        second.num_hits, first.num_hits,
+        "a hit must return the same count"
+    );
 
     let (bytes_after_second, requests_after_second) = counters.snapshot();
     assert_eq!(

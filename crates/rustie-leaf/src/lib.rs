@@ -25,7 +25,9 @@ mod query;
 mod sidecar;
 mod tokenizer;
 
-pub use query::{PatternPayload, RustieQueryExtension, cache_wrapped_query_ast, set_same_token_refine};
+pub use query::{
+    PatternPayload, RustieQueryExtension, cache_wrapped_query_ast, set_same_token_refine,
+};
 pub use sidecar::GraphSidecar;
 
 /// File name of the graph component inside a split.

@@ -7,7 +7,7 @@
 //!    endpoint's tests plus its hop label), on postings positions (`refine_same_token`);
 //! 3. expands every token test answered by postings to its terms, warming their positions;
 //! 4. fetches the sentence lengths (token patterns) or the graph blocks holding the candidates
-//!    (graph patterns).
+//!    (graph patterns), concurrently with step 3.
 //!
 //! Steps 1-3 all resolve `(field, test)` pairs against the term dictionary through one
 //! `SegmentTerms` per segment (`crate::expand`): the same endpoint constraint is often both a
@@ -36,7 +36,6 @@ use rustie_compiler::{
 use rustie_graph_store::reader::Gph2Block;
 use rustie_graph_store::{BLOCK_DOCS, SentenceScratch};
 use serde_json::Value as JsonValue;
-use tracing::debug;
 use tantivy::columnar::Column;
 use tantivy::directory::Directory;
 use tantivy::index::SegmentId;
@@ -44,6 +43,7 @@ use tantivy::postings::{Postings, SegmentPostings};
 use tantivy::query::{EnableScoring, Explanation, Query, Scorer, Weight};
 use tantivy::schema::{IndexRecordOption, Schema};
 use tantivy::{DocId, DocSet, Score, Searcher, SegmentReader, TERMINATED, Term};
+use tracing::debug;
 
 use crate::blocks::SplitGraph;
 use crate::candidates::{candidate_docs, refine_same_token};
@@ -177,8 +177,8 @@ impl QueryExtension for RustieQueryExtension {
 }
 
 /// Terms every match contains: the top-level conjuncts of the candidate filter that are single
-/// terms, including the `Term` children of a top-level `SameToken`. Quickwit skips a split
-/// outright when one of them is absent.
+/// terms, including the `Term` children of a top-level `SameToken` and every term of a top-level
+/// `Phrase`. Quickwit skips a split outright when one of them is absent.
 ///
 /// A `SameToken`'s children are required because the compiler only builds one from a
 /// mandatory single-token graph endpoint (see `GraphCompiler::endpoint_candidate`); nothing
@@ -192,16 +192,21 @@ fn required_terms(filter: &CandidateFilter, schema: &Schema) -> Vec<Term> {
         CandidateFilter::SameToken(children) => children.iter().collect(),
         other => vec![other],
     });
+    let term = |field: &str, value: &str| {
+        let field = schema.get_field(field).ok()?;
+        schema
+            .get_field_entry(field)
+            .is_indexed()
+            .then(|| Term::from_field_text(field, value))
+    };
     conjuncts
-        .filter_map(|part| match part {
-            CandidateFilter::Term { field, value } => {
-                let field = schema.get_field(field).ok()?;
-                schema
-                    .get_field_entry(field)
-                    .is_indexed()
-                    .then(|| Term::from_field_text(field, value))
-            }
-            _ => None,
+        .flat_map(|part| match part {
+            CandidateFilter::Term { field, value } => term(field, value).into_iter().collect(),
+            CandidateFilter::Phrase { field, terms } => terms
+                .iter()
+                .filter_map(|value| term(field, value))
+                .collect(),
+            _ => Vec::new(),
         })
         .collect()
 }
@@ -266,10 +271,14 @@ impl RustieWarmup {
         // whichever of the other two also needs it (the same endpoint constraint commonly feeds
         // both a `SameToken` child and an `ExternalLeaf`).
         let segment_terms = SegmentTerms::new(reader);
-        let candidates_before_refine =
-            candidate_docs(self.compiled.candidate(), &segment_terms, reader, &self.schema)
-                .await?
-                .docs();
+        let candidates_before_refine = candidate_docs(
+            self.compiled.candidate(),
+            &segment_terms,
+            reader,
+            &self.schema,
+        )
+        .await?
+        .docs();
         let candidates_before = candidates_before_refine.len();
         let candidates_took = started.elapsed();
         if self.compiled.exact {
@@ -327,45 +336,55 @@ impl RustieWarmup {
             });
         }
 
-        let mut leaf_terms = Vec::with_capacity(leaves.len());
-        for leaf in &leaves {
-            let terms = match self.schema.get_field(&leaf.field) {
-                Ok(field) if self.schema.get_field_entry(field).is_indexed() => {
-                    let resolved = segment_terms.resolve(field, &leaf.test).await?;
-                    segment_terms.warm_positions(field, &resolved).await?;
-                    resolved.terms().cloned().collect()
-                }
-                _ => Vec::new(),
-            };
-            leaf_terms.push(terms);
-        }
-
-        let leaves_took = started.elapsed() - candidates_took - refine_took;
-        let mut blocks_fetched = 0usize;
-        let graph = match (graph_segment, graph) {
-            (Some(plan), Some(graph)) => {
-                let blocks = graph.blocks_for_docs(&candidates).await?;
-                blocks_fetched = blocks.len();
-                Some(GraphSegment { plan, blocks })
-            }
-            _ => {
-                // Token patterns need each sentence's length.
-                warm_fast_field(reader, SENTENCE_LENGTH_FIELD).await?;
-                None
-            }
+        // The leaves' positions and the graph blocks (or sentence lengths) are independent
+        // reads: issue them together, and each leaf's concurrently with the others.
+        let leaf_terms = async {
+            let started = Instant::now();
+            let terms = futures::future::try_join_all(leaves.iter().map(|leaf| async {
+                anyhow::Ok(match self.schema.get_field(&leaf.field) {
+                    Ok(field) if self.schema.get_field_entry(field).is_indexed() => {
+                        let resolved = segment_terms.resolve(field, &leaf.test).await?;
+                        segment_terms.warm_positions(field, &resolved).await?;
+                        resolved.terms().cloned().collect()
+                    }
+                    _ => Vec::new(),
+                })
+            }))
+            .await?;
+            anyhow::Ok((terms, started.elapsed()))
         };
-        let (terms_resolved, position_groups) = segment_terms.stats();
+        let graph_data = async {
+            let started = Instant::now();
+            let segment = match (graph_segment, graph) {
+                (Some(plan), Some(graph)) => {
+                    let blocks = graph.blocks_for_docs(&candidates).await?;
+                    Some(GraphSegment { plan, blocks })
+                }
+                _ => {
+                    // Token patterns need each sentence's length.
+                    warm_fast_field(reader, SENTENCE_LENGTH_FIELD).await?;
+                    None
+                }
+            };
+            anyhow::Ok((segment, started.elapsed()))
+        };
+        let ((leaf_terms, leaves_took), (graph, graph_took)) =
+            futures::future::try_join(leaf_terms, graph_data).await?;
+        let blocks_fetched = graph.as_ref().map_or(0, |g| g.blocks.len());
+        let (terms_resolved, range_reads) = segment_terms.stats();
         debug!(
             segment = %reader.segment_id().short_uuid_string(),
             candidates_before,
             candidates_after = candidates.len(),
             blocks = blocks_fetched,
             terms_resolved,
-            position_groups,
+            range_reads,
             candidates_ms = candidates_took.as_millis() as u64,
             refine_ms = refine_took.as_millis() as u64,
+            // `leaves_ms` and `graph_ms` overlap (issued together); `total_ms` is wall time.
             leaves_ms = leaves_took.as_millis() as u64,
-            graph_ms = (started.elapsed() - candidates_took - refine_took - leaves_took).as_millis() as u64,
+            graph_ms = graph_took.as_millis() as u64,
+            total_ms = started.elapsed().as_millis() as u64,
             "rustie segment warmed"
         );
         Ok(SegmentPlan {
@@ -616,34 +635,5 @@ impl Scorer for RustieScorer {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tantivy::schema::TEXT;
-
-    #[test]
-    fn required_terms_include_top_level_same_token_children_only() {
-        let mut builder = Schema::builder();
-        let word = builder.add_text_field("word", TEXT);
-        let incoming = builder.add_text_field("incoming_edges", TEXT);
-        let schema = builder.build();
-
-        let filter = CandidateFilter::And(vec![
-            CandidateFilter::SameToken(vec![
-                CandidateFilter::term("word", "cat"),
-                CandidateFilter::term("incoming_edges", "nsubj"),
-            ]),
-            // Any one alternative may hold: none is required.
-            CandidateFilter::Or(vec![
-                CandidateFilter::SameToken(vec![CandidateFilter::term("word", "dog")]),
-                CandidateFilter::term("word", "bird"),
-            ]),
-        ]);
-        assert_eq!(
-            required_terms(&filter, &schema),
-            [
-                Term::from_field_text(word, "cat"),
-                Term::from_field_text(incoming, "nsubj"),
-            ]
-        );
-    }
-}
+#[path = "../test/unit/query.rs"]
+mod tests;

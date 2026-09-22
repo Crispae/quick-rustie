@@ -144,9 +144,7 @@ const PATTERNS: &[&str] = &[
 /// `nsubj` (a doc-level `word:cat AND incoming_edges:nsubj` match that fails on one token),
 /// and tokens containing `,` and `|`.
 fn handcrafted_doc() -> String {
-    let field = |name: &str, values: &[&str]| {
-        json!({"name": name, "$type": "ai.lum.odinson.TokensField", "tokens": values})
-    };
+    let field = |name: &str, values: &[&str]| json!({"name": name, "$type": "ai.lum.odinson.TokensField", "tokens": values});
     json!({"id": "handcrafted", "sentences": [
         {"numTokens": 3, "fields": [
             field("word", &["Dogs", "chase", "cat"]),

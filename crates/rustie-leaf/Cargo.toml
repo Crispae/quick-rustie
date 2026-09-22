@@ -47,3 +47,12 @@ quickwit-metastore = { git = "https://github.com/quickwit-oss/quickwit.git", tag
 quickwit-proto = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 quickwit-search = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 quickwit-storage = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+
+# Integration tests live under `test/unit/` (unit modules are `#[path]`-included from `src/`).
+[[test]]
+name = "leaf_search"
+path = "test/unit/leaf_search.rs"
+
+[[test]]
+name = "predicate_cache"
+path = "test/unit/predicate_cache.rs"

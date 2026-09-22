@@ -48,11 +48,9 @@ impl Tokenizer for SlotTokenizer {
     type TokenStream<'a> = SlotTokenStream;
 
     fn token_stream<'a>(&'a mut self, text: &'a str) -> SlotTokenStream {
-        // `slot_terms` positions are slot indices, not byte offsets; tantivy's Token also wants
-        // offsets (used for highlighting, not matching), so give each term its own slot's byte
-        // span. That's an approximation when a slot holds several comma-joined labels (all its
-        // labels share the slot's span), which is fine: nothing in this codebase highlights
-        // edge-label terms.
+        // `slot_terms` positions are slot indices, not byte offsets. tantivy's Token also wants
+        // offsets (used for highlighting, not matching); these fields are never highlighted, so
+        // each term just gets `0..len` rather than its real byte span in `text`.
         let tokens = slot_terms(text, self.multi)
             .into_iter()
             .map(|(position, term)| Token {
@@ -75,44 +73,5 @@ pub(crate) fn slot_text_analyzer(multi: bool) -> TextAnalyzer {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn tokens(text: &str, multi: bool) -> Vec<(usize, String)> {
-        let mut analyzer = slot_text_analyzer(multi);
-        let mut stream = analyzer.token_stream(text);
-        let mut out = Vec::new();
-        while let Some(tok) = stream.next() {
-            out.push((tok.position, tok.text.clone()));
-        }
-        out
-    }
-
-    #[test]
-    fn single_value_one_term_per_slot() {
-        let encoded = rustie_schema::encode_tokens(&[
-            "The".to_string(),
-            "".to_string(),
-            "cat".to_string(),
-        ]);
-        assert_eq!(
-            tokens(&encoded, false),
-            vec![(0, "The".to_string()), (2, "cat".to_string())]
-        );
-    }
-
-    #[test]
-    fn multi_value_several_terms_at_one_position() {
-        let encoded = rustie_schema::encode_edges(&[
-            vec!["det".to_string()],
-            vec![],
-            vec!["nsubj".to_string(), "advmod".to_string()],
-        ]);
-        let toks = tokens(&encoded, true);
-        assert_eq!(toks[0], (0, "det".to_string()));
-        assert_eq!(
-            toks[1..].iter().map(|(p, _)| *p).collect::<Vec<_>>(),
-            vec![2, 2]
-        );
-    }
-}
+#[path = "../test/unit/tokenizer.rs"]
+mod tests;

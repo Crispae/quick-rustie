@@ -12,11 +12,17 @@
 //! plan (the exact matcher). [`SegmentTerms`] caches the resolution — the dictionary walk and the
 //! postings/positions warming — so the second caller reuses the first's work instead of repeating
 //! it (previously the whole cost, including re-warming positions, ran twice).
+//!
+//! Resolving reads the dictionary only (plus, for a dictionary-automaton regex, the postings the
+//! automaton warm pulls in anyway). Postings and positions are warmed on demand
+//! ([`SegmentTerms::warm_postings`], [`SegmentTerms::warm_positions`]), so a test whose documents
+//! are never needed — its conjunction already empty — costs no postings read.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use futures::lock::Mutex as AsyncMutex;
 use futures::{StreamExt, TryStreamExt};
 use rustie_compiler::LeafTest;
 use tantivy::postings::TermInfo;
@@ -27,10 +33,10 @@ use tantivy_fst::Automaton;
 /// Warm concurrency for coalesced postings/positions range reads.
 const WARM_CONCURRENCY: usize = 16;
 
-/// Merge position-range holes under this many bytes into one read: the same heuristic tantivy's
-/// own `warm_postings_automaton` uses for postings ranges (`MERGE_HOLES_UNDER_BYTES`, roughly
-/// what a 50ms-TTFB S3 read can absorb for free).
-const POSITIONS_MERGE_GAP: usize = 4 * 1024 * 1024;
+/// Merge postings/position-range holes under this many bytes into one read: the same heuristic
+/// tantivy's own `warm_postings_automaton` uses for postings ranges (`MERGE_HOLES_UNDER_BYTES`,
+/// roughly what a 50ms-TTFB S3 read can absorb for free).
+const RANGE_MERGE_GAP: usize = 4 * 1024 * 1024;
 
 /// A test's matched terms in one field: resolved once per segment, then shared by every caller
 /// that needs them.
@@ -38,7 +44,11 @@ pub(crate) struct Resolved {
     /// Matched terms with their dictionary entry, in dictionary (and therefore postings-file and
     /// positions-file) order.
     terms: Vec<(Term, TermInfo)>,
-    positions_warmed: AtomicBool,
+    /// Whether the postings / the positions (with postings) are warm. Async locks, held across
+    /// the reads: a concurrent caller waits for the first warm to finish rather than returning
+    /// early and reading cold bytes.
+    postings_warmed: AsyncMutex<bool>,
+    positions_warmed: AsyncMutex<bool>,
 }
 
 impl Resolved {
@@ -83,14 +93,19 @@ impl TestKey {
     }
 }
 
+/// A key's resolution, filled by the first caller (see [`SegmentTerms::resolve`]).
+type ResolveSlot = Arc<AsyncMutex<Option<Arc<Resolved>>>>;
+
 /// Resolves `(field, test)` pairs against one segment, caching each pair's matched terms so
 /// every caller within one `prepare_segment` call pays for the dictionary walk and the range
 /// reads once. Not `Sync` across segments: build one per segment.
 pub(crate) struct SegmentTerms<'a> {
     reader: &'a SegmentReader,
-    cache: Mutex<HashMap<(Field, TestKey), Arc<Resolved>>>,
+    /// One slot per key, filled by the first caller; concurrent callers for the same key wait on
+    /// the slot's lock instead of repeating the dictionary walk.
+    cache: Mutex<HashMap<(Field, TestKey), ResolveSlot>>,
     resolved_count: AtomicUsize,
-    position_group_count: AtomicUsize,
+    range_read_count: AtomicUsize,
 }
 
 impl<'a> SegmentTerms<'a> {
@@ -99,68 +114,116 @@ impl<'a> SegmentTerms<'a> {
             reader,
             cache: Mutex::new(HashMap::new()),
             resolved_count: AtomicUsize::new(0),
-            position_group_count: AtomicUsize::new(0),
+            range_read_count: AtomicUsize::new(0),
         }
     }
 
-    /// Terms of `field` satisfying `test`, with postings (not positions) warm. Cached: a second
-    /// call with an equivalent `(field, test)` in this segment returns the same `Resolved`
-    /// without touching the dictionary or postings again. `field` must already be checked present
-    /// and indexed (callers do this while resolving the field name to a `Field`).
+    /// Terms of `field` satisfying `test`, with their `TermInfo`s (postings not necessarily warm:
+    /// see [`Self::warm_postings`]). Cached: a second call with an equivalent `(field, test)` in
+    /// this segment returns the same `Resolved` without touching the dictionary again. `field`
+    /// must already be checked present and indexed (callers do this while resolving the field
+    /// name to a `Field`).
     pub(crate) async fn resolve(
         &self,
         field: Field,
         test: &LeafTest,
     ) -> anyhow::Result<Arc<Resolved>> {
         let key = (field, TestKey::of(test));
-        if let Some(hit) = self.cache.lock().expect("poisoned").get(&key) {
+        let slot = self
+            .cache
+            .lock()
+            .expect("poisoned")
+            .entry(key)
+            .or_default()
+            .clone();
+        // Held across the dictionary walk: every caller shares the one `Resolved` (and so its
+        // warm flags). A failed resolve leaves the slot empty for the next caller to retry.
+        let mut slot = slot.lock().await;
+        if let Some(hit) = slot.as_ref() {
             return Ok(hit.clone());
         }
         let inverted_index = self.reader.inverted_index(field)?;
         let resolved = Arc::new(resolve_uncached(&inverted_index, field, test).await?);
         self.resolved_count.fetch_add(1, Ordering::Relaxed);
-        // `or_insert`, not a plain insert: if another call resolved the same key while this one
-        // was awaiting I/O, every caller must share the one `Resolved` that won, so its
-        // `positions_warmed` flag is shared too.
-        Ok(self
-            .cache
-            .lock()
-            .expect("poisoned")
-            .entry(key)
-            .or_insert(resolved)
-            .clone())
+        *slot = Some(resolved.clone());
+        Ok(resolved)
     }
 
-    /// Warms `resolved`'s positions, a no-op if already warmed (by this call or an earlier one
-    /// for the same `Resolved`). Merges nearby terms' position ranges into a few contiguous reads
+    /// Warms `resolved`'s postings (not positions), a no-op if already warm (on their own or
+    /// with the positions). Merges nearby terms' postings ranges into a few contiguous reads
     /// instead of one request per term.
+    pub(crate) async fn warm_postings(
+        &self,
+        field: Field,
+        resolved: &Resolved,
+    ) -> anyhow::Result<()> {
+        let mut warmed = resolved.postings_warmed.lock().await;
+        if *warmed || resolved.terms.is_empty() {
+            return Ok(());
+        }
+        self.warm_ranges(field, resolved, false).await?;
+        *warmed = true;
+        Ok(())
+    }
+
+    /// Warms `resolved`'s postings and positions, a no-op if already warmed (by this call or an
+    /// earlier one for the same `Resolved`). Merges nearby terms' position ranges into a few
+    /// contiguous reads instead of one request per term. A failed read leaves the flag unset, so
+    /// a later caller retries instead of reading cold bytes.
     pub(crate) async fn warm_positions(
         &self,
         field: Field,
         resolved: &Resolved,
     ) -> anyhow::Result<()> {
-        if resolved.terms.is_empty() {
+        let mut warmed = resolved.positions_warmed.lock().await;
+        if *warmed || resolved.terms.is_empty() {
             return Ok(());
         }
-        if resolved.positions_warmed.swap(true, Ordering::Relaxed) {
-            return Ok(());
-        }
+        self.warm_ranges(field, resolved, true).await?;
+        *warmed = true;
+        // `warm_postings_range(.., true)` read the postings too.
+        *resolved.postings_warmed.lock().await = true;
+        Ok(())
+    }
+
+    async fn warm_ranges(
+        &self,
+        field: Field,
+        resolved: &Resolved,
+        with_positions: bool,
+    ) -> anyhow::Result<()> {
         let inverted_index = self.reader.inverted_index(field)?;
         let ranges: Vec<_> = resolved
             .terms
             .iter()
-            .map(|(_, info)| info.positions_range.clone())
+            .map(|(_, info)| {
+                if with_positions {
+                    info.positions_range.clone()
+                } else {
+                    info.postings_range.clone()
+                }
+            })
             .collect();
-        let groups = group_runs(&ranges, POSITIONS_MERGE_GAP);
-        self.position_group_count
+        let groups = group_runs(&ranges, RANGE_MERGE_GAP);
+        self.range_read_count
             .fetch_add(groups.len(), Ordering::Relaxed);
         futures::stream::iter(groups.into_iter().map(|(start, end)| {
             let inverted_index = &inverted_index;
             let terms = &resolved.terms;
             async move {
+                // A lone term (every exact test) is a point lookup plus its own range read; a
+                // range warm would stream the dictionary over `lo..=hi` first, which measured
+                // slower on PubMed.
+                if start == end {
+                    return inverted_index
+                        .warm_postings(&terms[start].0, with_positions)
+                        .await;
+                }
                 let lo = terms[start].0.clone();
                 let hi = terms[end].0.clone();
-                inverted_index.warm_postings_range(lo..=hi, None, true).await
+                inverted_index
+                    .warm_postings_range(lo..=hi, None, with_positions)
+                    .await
             }
         }))
         .buffer_unordered(WARM_CONCURRENCY)
@@ -169,12 +232,12 @@ impl<'a> SegmentTerms<'a> {
         Ok(())
     }
 
-    /// `(distinct (field, test) pairs resolved, position-range reads issued)` in this segment, for
-    /// the `rustie segment warmed` debug event.
+    /// `(distinct (field, test) pairs resolved, coalesced postings/positions reads issued)` in
+    /// this segment, for the `rustie segment warmed` debug event.
     pub(crate) fn stats(&self) -> (usize, usize) {
         (
             self.resolved_count.load(Ordering::Relaxed),
-            self.position_group_count.load(Ordering::Relaxed),
+            self.range_read_count.load(Ordering::Relaxed),
         )
     }
 }
@@ -184,6 +247,7 @@ async fn resolve_uncached(
     field: Field,
     test: &LeafTest,
 ) -> anyhow::Result<Resolved> {
+    let mut postings_warmed = false;
     let terms: Vec<(Term, TermInfo)> = match test {
         LeafTest::Exact(value) => {
             let term = Term::from_field_text(field, value);
@@ -192,10 +256,7 @@ async fn resolve_uncached(
                 .get_async(term.serialized_value_bytes())
                 .await?
             {
-                Some(info) => {
-                    inverted_index.warm_postings(&term, false).await?;
-                    vec![(term, info)]
-                }
+                Some(info) => vec![(term, info)],
                 None => Vec::new(),
             }
         }
@@ -207,6 +268,7 @@ async fn resolve_uncached(
                     inverted_index
                         .warm_postings_automaton(fst_regex.clone(), |task| async move { task() })
                         .await?;
+                    postings_warmed = true;
                     let mut stream = inverted_index.terms().search(fst_regex).into_stream()?;
                     let mut entries = Vec::new();
                     while stream.advance() {
@@ -216,9 +278,9 @@ async fn resolve_uncached(
                 }
                 None => {
                     // Outside the dictionary automaton's dialect (look-around, word boundaries):
-                    // a full scan needs every term's postings warm too, in one coalesced read.
+                    // scan the whole dictionary, but leave postings cold — only the matched
+                    // terms' postings are read, on demand (`warm_postings`), not the field's.
                     inverted_index.terms().warm_up_dictionary().await?;
-                    inverted_index.warm_postings_full(false).await?;
                     let mut stream = inverted_index.terms().stream()?;
                     let mut entries = Vec::new();
                     while stream.advance() {
@@ -237,7 +299,8 @@ async fn resolve_uncached(
     };
     Ok(Resolved {
         terms,
-        positions_warmed: AtomicBool::new(false),
+        postings_warmed: AsyncMutex::new(postings_warmed),
+        positions_warmed: AsyncMutex::new(false),
     })
 }
 
@@ -336,46 +399,5 @@ impl Automaton for SharedRegex {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn anchored(p: &str) -> LeafTest {
-        LeafTest::Regex(regex::Regex::new(&format!(r"\A(?:{p})\z")).unwrap())
-    }
-
-    #[test]
-    fn dictionary_dialect() {
-        assert!(dictionary_regex(&anchored("J.*")).is_some());
-        assert!(dictionary_regex(&anchored("^[Cc]ancer.*$")).is_some());
-        // Look-around and word boundaries are beyond the dictionary automaton: full scan.
-        assert!(dictionary_regex(&anchored(r"\bJohn")).is_none());
-        assert!(dictionary_regex(&LeafTest::Fuzzy("foo".into())).is_some());
-        assert!(dictionary_regex(&LeafTest::Fuzzy("straße".into())).is_none());
-        assert_eq!(unanchor(r"\A(?:a|b)\z"), "a|b");
-        assert_eq!(case_insensitive("a1-"), r"[aA]1\-");
-    }
-
-    #[test]
-    fn group_runs_merges_within_gap_and_splits_beyond_it() {
-        assert_eq!(group_runs(&[], 10), Vec::<(usize, usize)>::new());
-        assert_eq!(group_runs(&[0..5], 10), vec![(0, 0)]);
-        // Both gaps (5->7 and 8->10) are 2 bytes, within the 10-byte budget -> one group.
-        assert_eq!(group_runs(&[0..5, 7..8, 10..20], 10), vec![(0, 2)]);
-        // Same ranges, budget 1: neither 2-byte gap fits -> three singleton groups.
-        assert_eq!(group_runs(&[0..5, 7..8, 10..20], 1), vec![(0, 0), (1, 1), (2, 2)]);
-    }
-
-    #[test]
-    fn test_key_matches_across_independently_anchored_regexes() {
-        // The two call sites that build a `LeafTest::Regex` (a `SameToken` child in
-        // `candidates.rs`, and a bound graph plan's `ExternalLeaf`) each anchor their own
-        // `regex::Regex` from the same raw pattern; the keys must still collide.
-        use rustie_compiler::matching::node_test::anchor;
-        let a = regex::Regex::new(".*ase").unwrap();
-        let b = regex::Regex::new(".*ase").unwrap();
-        assert_eq!(
-            TestKey::of(&LeafTest::Regex(anchor(&a))),
-            TestKey::of(&LeafTest::Regex(anchor(&b)))
-        );
-    }
-}
+#[path = "../test/unit/expand.rs"]
+mod tests;

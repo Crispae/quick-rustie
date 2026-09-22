@@ -1,17 +1,18 @@
 //! Candidate documents of one segment: the compiler's [`CandidateFilter`] (a superset of the
 //! matching sentences) evaluated on postings.
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use rustie_compiler::matching::node_test::anchor;
 use rustie_compiler::{CandidateFilter, LeafTest};
 use tantivy::postings::{Postings, SegmentPostings};
 use tantivy::schema::{Field, IndexRecordOption, Schema};
-use tantivy::{DocId, DocSet, SegmentReader, TERMINATED};
+use tantivy::{DocId, DocSet, InvertedIndexReader, SegmentReader, TERMINATED};
 
-use crate::expand::SegmentTerms;
+use crate::expand::{Resolved, SegmentTerms};
 
-/// A set of document ids of one segment.
+/// A set of document ids of one segment, as a bitmap: the union of an `Or`, or of a common
+/// leaf's postings when that is cheaper to probe than seeking.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DocBits {
     words: Vec<u64>,
@@ -26,30 +27,14 @@ impl DocBits {
         }
     }
 
-    fn full(max_doc: u32) -> Self {
-        let mut bits = Self::empty(max_doc);
-        for doc in 0..max_doc {
-            bits.insert(doc);
-        }
-        bits
-    }
-
     fn insert(&mut self, doc: DocId) {
         self.words[doc as usize / 64] |= 1 << (doc % 64);
     }
 
-    fn and(&mut self, other: &Self) {
+    fn contains(&self, doc: DocId) -> bool {
         self.words
-            .iter_mut()
-            .zip(&other.words)
-            .for_each(|(a, b)| *a &= b);
-    }
-
-    fn or(&mut self, other: &Self) {
-        self.words
-            .iter_mut()
-            .zip(&other.words)
-            .for_each(|(a, b)| *a |= b);
+            .get(doc as usize / 64)
+            .is_some_and(|word| word & (1 << (doc % 64)) != 0)
     }
 
     pub(crate) fn docs(&self) -> Vec<DocId> {
@@ -67,64 +52,238 @@ impl DocBits {
     }
 }
 
+/// What [`candidate_docs`] admits: every document, or an ascending list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Candidates {
+    max_doc: u32,
+    /// `None` = every document of the segment (nothing constrains it).
+    docs: Option<Vec<DocId>>,
+}
+
+impl Candidates {
+    pub(crate) fn docs(self) -> Vec<DocId> {
+        self.docs.unwrap_or_else(|| (0..self.max_doc).collect())
+    }
+
+    fn none(max_doc: u32) -> Self {
+        Self {
+            max_doc,
+            docs: Some(Vec::new()),
+        }
+    }
+}
+
 /// Documents of `reader` that `filter` admits. Warms (and reads) the postings it needs, through
 /// `terms` so a `(field, test)` pair resolved here is reused by `refine_same_token` and the
 /// external-leaf resolution in `query.rs`, instead of walking the dictionary again.
+///
+/// A conjunction (`And`, `Phrase`, a document-level `SameToken`) is planned by selectivity: all
+/// its leaves are resolved concurrently (dictionary only), then intersected rarest first, each
+/// further leaf probed only on the surviving documents, stopping as soon as nothing survives —
+/// at which point the remaining leaves' postings are never read.
 pub(crate) fn candidate_docs<'a>(
     filter: &'a CandidateFilter,
     terms: &'a SegmentTerms<'a>,
     reader: &'a SegmentReader,
     schema: &'a Schema,
-) -> futures::future::BoxFuture<'a, anyhow::Result<DocBits>> {
+) -> futures::future::BoxFuture<'a, anyhow::Result<Candidates>> {
     Box::pin(async move {
         let max_doc = reader.max_doc();
-        Ok(match filter {
-            CandidateFilter::All => DocBits::full(max_doc),
-            CandidateFilter::Term { field, value } => {
-                docs_of_test(field, &LeafTest::Exact(value.clone()), terms, reader, schema).await?
-            }
-            CandidateFilter::Regex { field, pattern } => {
-                let regex = regex::Regex::new(pattern)
-                    .map_err(|err| anyhow::anyhow!("invalid regex `{pattern}`: {err}"))?;
-                docs_of_test(field, &LeafTest::Regex(anchor(&regex)), terms, reader, schema).await?
-            }
-            // Adjacency is verified by the exact matcher; here every term must be present.
-            CandidateFilter::Phrase { field, terms: values } => {
-                let mut acc = DocBits::full(max_doc);
-                for value in values {
-                    let docs =
-                        docs_of_test(field, &LeafTest::Exact(value.clone()), terms, reader, schema)
-                            .await?;
-                    acc.and(&docs);
-                }
-                acc
-            }
-            CandidateFilter::And(parts) => {
-                let mut acc = DocBits::full(max_doc);
-                for part in parts {
-                    acc.and(&candidate_docs(part, terms, reader, schema).await?);
-                }
-                acc
-            }
+        match filter {
+            CandidateFilter::All => Ok(Candidates {
+                max_doc,
+                docs: None,
+            }),
             CandidateFilter::Or(parts) => {
                 let mut acc = DocBits::empty(max_doc);
                 for part in parts {
-                    acc.or(&candidate_docs(part, terms, reader, schema).await?);
+                    match candidate_docs(part, terms, reader, schema).await?.docs {
+                        None => {
+                            return Ok(Candidates {
+                                max_doc,
+                                docs: None,
+                            });
+                        }
+                        Some(docs) => docs.into_iter().for_each(|doc| acc.insert(doc)),
+                    }
                 }
-                acc
+                Ok(Candidates {
+                    max_doc,
+                    docs: Some(acc.docs()),
+                })
             }
-            // Document-level: every child must occur somewhere in the sentence, same as `And`.
-            // That every child holds on the *same* token is checked later, over postings
-            // positions, by `refine_same_token` — a further (sound) narrowing of this same set.
-            CandidateFilter::SameToken(parts) => {
-                let mut acc = DocBits::full(max_doc);
-                for part in parts {
-                    acc.and(&candidate_docs(part, terms, reader, schema).await?);
-                }
-                acc
+            conjunction => {
+                let mut leaves = Vec::new();
+                let mut nested = Vec::new();
+                flatten_conjunction(conjunction, &mut leaves, &mut nested)?;
+                intersect(&leaves, &nested, terms, reader, schema).await
             }
-        })
+        }
     })
+}
+
+/// `filter`'s conjuncts: the token tests every admitted document contains (`leaves`), and the
+/// sub-filters it must also satisfy that are not single tests (`nested`, e.g. an `Or`).
+fn flatten_conjunction<'f>(
+    filter: &'f CandidateFilter,
+    leaves: &mut Vec<(&'f str, LeafTest)>,
+    nested: &mut Vec<&'f CandidateFilter>,
+) -> anyhow::Result<()> {
+    match filter {
+        CandidateFilter::All => {}
+        CandidateFilter::Term { .. } | CandidateFilter::Regex { .. } => {
+            leaves.push(field_and_test(filter)?)
+        }
+        // Adjacency is verified by the exact matcher; here every term must be present.
+        CandidateFilter::Phrase { field, terms } => leaves.extend(
+            terms
+                .iter()
+                .map(|value| (field.as_str(), LeafTest::Exact(value.clone()))),
+        ),
+        // Document-level: every child must occur somewhere in the sentence, same as `And`.
+        // That every child holds on the *same* token is checked later, over postings
+        // positions, by `refine_same_token` — a further (sound) narrowing of this same set.
+        CandidateFilter::And(parts) | CandidateFilter::SameToken(parts) => {
+            for part in parts {
+                flatten_conjunction(part, leaves, nested)?;
+            }
+        }
+        CandidateFilter::Or(_) => nested.push(filter),
+    }
+    Ok(())
+}
+
+/// A leaf's field and resolution, or `None` when the split cannot hold it (field absent or not
+/// indexed): then nothing matches.
+async fn resolve_leaf(
+    field_name: &str,
+    test: &LeafTest,
+    terms: &SegmentTerms<'_>,
+    schema: &Schema,
+) -> anyhow::Result<Option<(Field, Arc<Resolved>)>> {
+    let Ok(field) = schema.get_field(field_name) else {
+        return Ok(None);
+    };
+    if !schema.get_field_entry(field).is_indexed() {
+        return Ok(None);
+    }
+    Ok(Some((field, terms.resolve(field, test).await?)))
+}
+
+async fn intersect(
+    leaves: &[(&str, LeafTest)],
+    nested: &[&CandidateFilter],
+    terms: &SegmentTerms<'_>,
+    reader: &SegmentReader,
+    schema: &Schema,
+) -> anyhow::Result<Candidates> {
+    let max_doc = reader.max_doc();
+    // Dictionary lookups only, all at once: on object storage each is a round trip.
+    let resolved = futures::future::try_join_all(
+        leaves
+            .iter()
+            .map(|(field, test)| resolve_leaf(field, test, terms, schema)),
+    )
+    .await?;
+    let Some(mut resolved) = resolved.into_iter().collect::<Option<Vec<_>>>() else {
+        return Ok(Candidates::none(max_doc));
+    };
+    resolved.sort_by_key(|(_, r)| r.doc_freq());
+    if resolved.first().is_some_and(|(_, r)| r.doc_freq() == 0) {
+        return Ok(Candidates::none(max_doc));
+    }
+
+    let mut acc: Option<Vec<DocId>> = None;
+    for (field, leaf) in &resolved {
+        if acc.as_ref().is_some_and(Vec::is_empty) {
+            return Ok(Candidates::none(max_doc));
+        }
+        terms.warm_postings(*field, leaf).await?;
+        let inverted_index = reader.inverted_index(*field)?;
+        match &mut acc {
+            None => acc = Some(leaf_docs(&inverted_index, leaf)?),
+            Some(docs) => retain_in_leaf(docs, &inverted_index, leaf, max_doc)?,
+        }
+    }
+    for part in nested {
+        if acc.as_ref().is_some_and(Vec::is_empty) {
+            break;
+        }
+        let Some(part_docs) = candidate_docs(part, terms, reader, schema).await?.docs else {
+            continue;
+        };
+        match &mut acc {
+            None => acc = Some(part_docs),
+            Some(docs) => intersect_sorted(docs, &part_docs),
+        }
+    }
+    Ok(Candidates { max_doc, docs: acc })
+}
+
+/// Every document holding one of `leaf`'s terms, ascending (postings must be warm).
+fn leaf_docs(inverted_index: &InvertedIndexReader, leaf: &Resolved) -> anyhow::Result<Vec<DocId>> {
+    let mut out = Vec::with_capacity(leaf.doc_freq() as usize);
+    for term in leaf.terms() {
+        if let Some(mut postings) = inverted_index.read_postings(term, IndexRecordOption::Basic)? {
+            while postings.doc() != TERMINATED {
+                out.push(postings.doc());
+                postings.advance();
+            }
+        }
+    }
+    if leaf.len() > 1 {
+        out.sort_unstable();
+        out.dedup();
+    }
+    Ok(out)
+}
+
+/// A seek into postings decodes (at least) the 128-doc block it lands in, so it only beats
+/// decoding the whole list when candidates are sparse enough to skip blocks: on average more
+/// than a block's worth of postings between consecutive candidates.
+const SEEK_COST_IN_POSTINGS: u64 = 128;
+
+/// Keeps the documents of `docs` holding one of `leaf`'s terms (postings must be warm). Seeks
+/// each term's postings to each candidate when candidates are sparse against the leaf (see
+/// [`SEEK_COST_IN_POSTINGS`]), otherwise decodes the leaf into a bitmap and probes that.
+fn retain_in_leaf(
+    docs: &mut Vec<DocId>,
+    inverted_index: &InvertedIndexReader,
+    leaf: &Resolved,
+    max_doc: u32,
+) -> anyhow::Result<()> {
+    let seek_cost = (docs.len() as u64)
+        .saturating_mul(leaf.len() as u64)
+        .saturating_mul(SEEK_COST_IN_POSTINGS);
+    if seek_cost <= leaf.doc_freq() {
+        let mut postings = Vec::with_capacity(leaf.len());
+        for term in leaf.terms() {
+            if let Some(p) = inverted_index.read_postings(term, IndexRecordOption::Basic)? {
+                postings.push(p);
+            }
+        }
+        docs.retain(|&doc| postings.iter_mut().any(|p| seek_to(p, doc)));
+    } else {
+        let mut bits = DocBits::empty(max_doc);
+        for term in leaf.terms() {
+            if let Some(mut p) = inverted_index.read_postings(term, IndexRecordOption::Basic)? {
+                while p.doc() != TERMINATED {
+                    bits.insert(p.doc());
+                    p.advance();
+                }
+            }
+        }
+        docs.retain(|&doc| bits.contains(doc));
+    }
+    Ok(())
+}
+
+/// Moves `postings` forward to `doc` (targets must ascend), and whether it holds `doc`.
+fn seek_to(postings: &mut SegmentPostings, doc: DocId) -> bool {
+    if postings.doc() < doc {
+        postings.seek(doc);
+    }
+    postings.doc() == doc
 }
 
 /// Above this doc-frequency ratio, a `SameToken` node's rarest child is considered too common
@@ -154,7 +313,7 @@ struct SameTokenChild {
 /// resolution (postings warm, `doc_freq` available with no further I/O).
 struct PreparedChild {
     field: Field,
-    resolved: std::sync::Arc<crate::expand::Resolved>,
+    resolved: Arc<Resolved>,
 }
 
 /// `filter`'s `Term`/`Regex` translated to a field + [`LeafTest`], the same conversion
@@ -197,64 +356,73 @@ async fn prepare_same_token_child(
     Ok(Some(PreparedChild { field, resolved }))
 }
 
-/// This child's token positions in `doc` (the union over all its expanded terms), or `false` if
-/// it has none there. `buf` is cleared and reused across docs to avoid reallocating.
-fn child_positions_for_doc(child: &mut SameTokenChild, doc: DocId, buf: &mut Vec<u32>) -> bool {
-    buf.clear();
-    let mut term_positions = Vec::new();
+/// `child`'s token positions in `doc` (the union over all its expanded terms), ascending and
+/// deduplicated, into `out`. Its postings must already be at or before `doc`.
+fn child_positions_for_doc(
+    child: &mut SameTokenChild,
+    doc: DocId,
+    term_positions: &mut Vec<u32>,
+    out: &mut Vec<u32>,
+) {
+    out.clear();
     for postings in &mut child.postings {
-        if postings.doc() < doc {
-            postings.seek(doc);
-        }
-        if postings.doc() == doc {
-            postings.positions(&mut term_positions);
-            buf.extend_from_slice(&term_positions);
+        if seek_to(postings, doc) {
+            postings.positions(term_positions);
+            out.extend_from_slice(term_positions);
         }
     }
-    if buf.is_empty() {
-        return false;
+    // One term's positions are already ascending and distinct.
+    if child.postings.len() > 1 {
+        out.sort_unstable();
+        out.dedup();
     }
-    buf.sort_unstable();
-    buf.dedup();
-    true
 }
 
-/// `acc` becomes `acc ∩ other`, both sorted and deduplicated.
+/// `acc` becomes `acc ∩ other` in place, both sorted and deduplicated.
 fn intersect_sorted(acc: &mut Vec<u32>, other: &[u32]) {
-    let mut i = 0;
-    let mut j = 0;
-    let mut out = Vec::with_capacity(acc.len().min(other.len()));
+    let (mut i, mut j, mut kept) = (0, 0, 0);
     while i < acc.len() && j < other.len() {
         match acc[i].cmp(&other[j]) {
             std::cmp::Ordering::Less => i += 1,
             std::cmp::Ordering::Greater => j += 1,
             std::cmp::Ordering::Equal => {
-                out.push(acc[i]);
+                acc[kept] = acc[i];
+                kept += 1;
                 i += 1;
                 j += 1;
             }
         }
     }
-    *acc = out;
+    acc.truncate(kept);
 }
 
-/// Whether some one token of `doc` satisfies every child of `children` (rarest-first: the first
-/// child with nothing at `doc` fails the whole node without touching the rest).
-fn doc_has_same_token(children: &mut [SameTokenChild], doc: DocId, buf: &mut Vec<u32>, acc: &mut Vec<u32>) -> bool {
+/// Reused across the documents of one refinement pass.
+#[derive(Default)]
+struct PositionScratch {
+    term_positions: Vec<u32>,
+    child: Vec<u32>,
+    acc: Vec<u32>,
+}
+
+/// Whether some one token of `doc` satisfies every child of `children` (rarest first: the first
+/// child whose positions don't meet the others' fails the node without decoding the rest).
+fn doc_has_same_token(
+    children: &mut [SameTokenChild],
+    doc: DocId,
+    scratch: &mut PositionScratch,
+) -> bool {
     for (i, child) in children.iter_mut().enumerate() {
-        if !child_positions_for_doc(child, doc, buf) {
+        child_positions_for_doc(child, doc, &mut scratch.term_positions, &mut scratch.child);
+        if i == 0 {
+            std::mem::swap(&mut scratch.acc, &mut scratch.child);
+        } else {
+            intersect_sorted(&mut scratch.acc, &scratch.child);
+        }
+        if scratch.acc.is_empty() {
             return false;
         }
-        if i == 0 {
-            acc.clone_from(buf);
-        } else {
-            intersect_sorted(acc, buf);
-            if acc.is_empty() {
-                return false;
-            }
-        }
     }
-    !acc.is_empty()
+    true
 }
 
 /// The `SameToken` nodes to refine on: `filter` itself, or its top-level `And` conjuncts. A
@@ -348,171 +516,12 @@ async fn refine_same_token_with(
             }
             same_token_children.push(SameTokenChild { postings });
         }
-        let mut buf = Vec::new();
-        let mut acc = Vec::new();
-        docs.retain(|&doc| doc_has_same_token(&mut same_token_children, doc, &mut buf, &mut acc));
+        let mut scratch = PositionScratch::default();
+        docs.retain(|&doc| doc_has_same_token(&mut same_token_children, doc, &mut scratch));
     }
     Ok(docs)
 }
 
-async fn docs_of_test(
-    field_name: &str,
-    test: &LeafTest,
-    terms: &SegmentTerms<'_>,
-    reader: &SegmentReader,
-    schema: &Schema,
-) -> anyhow::Result<DocBits> {
-    let mut bits = DocBits::empty(reader.max_doc());
-    // A field the split does not have holds no term: nothing matches.
-    let Ok(field) = schema.get_field(field_name) else {
-        return Ok(bits);
-    };
-    if !schema.get_field_entry(field).is_indexed() {
-        return Ok(bits);
-    }
-    let inverted_index = reader.inverted_index(field)?;
-    let resolved = terms.resolve(field, test).await?;
-    for term in resolved.terms() {
-        if let Some(mut postings) = inverted_index.read_postings(term, IndexRecordOption::Basic)? {
-            while postings.doc() != TERMINATED {
-                bits.insert(postings.doc());
-                postings.advance();
-            }
-        }
-    }
-    Ok(bits)
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bit_operations() {
-        let mut a = DocBits::empty(130);
-        for d in [0, 64, 129] {
-            a.insert(d);
-        }
-        let mut b = DocBits::empty(130);
-        for d in [64, 100] {
-            b.insert(d);
-        }
-        let mut and = a.clone();
-        and.and(&b);
-        assert_eq!(and.docs(), [64]);
-        let mut or = a.clone();
-        or.or(&b);
-        assert_eq!(or.docs(), [0, 64, 100, 129]);
-        assert_eq!(DocBits::full(3).docs(), [0, 1, 2]);
-    }
-
-    #[test]
-    fn intersect_sorted_keeps_common_positions() {
-        let mut acc = vec![0, 2, 5, 9];
-        intersect_sorted(&mut acc, &[1, 2, 9, 12]);
-        assert_eq!(acc, [2, 9]);
-        intersect_sorted(&mut acc, &[3]);
-        assert!(acc.is_empty());
-    }
-
-    use tantivy::schema::{TextFieldIndexing, TextOptions};
-    use tantivy::{Index, IndexReader, doc};
-
-    /// A one-segment in-RAM index with the `rustie_tokens` / `rustie_edges` tokenizers:
-    /// `tag` and `incoming_edges` indexed with positions, `basic_edges` indexed like the
-    /// pre-`rustie_edges` edge fields (`record: basic`, no positions).
-    fn slot_index(docs: &[(&str, &str)]) -> (Index, IndexReader) {
-        let positional = |tokenizer: &str, option| {
-            TextOptions::default().set_indexing_options(
-                TextFieldIndexing::default()
-                    .set_tokenizer(tokenizer)
-                    .set_index_option(option),
-            )
-        };
-        let mut builder = Schema::builder();
-        let tag = builder.add_text_field(
-            "tag",
-            positional("rustie_tokens", IndexRecordOption::WithFreqsAndPositions),
-        );
-        let incoming = builder.add_text_field(
-            "incoming_edges",
-            positional("rustie_edges", IndexRecordOption::WithFreqsAndPositions),
-        );
-        let basic = builder.add_text_field(
-            "basic_edges",
-            positional("rustie_edges", IndexRecordOption::Basic),
-        );
-        let index = Index::create_in_ram(builder.build());
-        index
-            .tokenizers()
-            .register("rustie_tokens", crate::tokenizer::slot_text_analyzer(false));
-        index
-            .tokenizers()
-            .register("rustie_edges", crate::tokenizer::slot_text_analyzer(true));
-        let mut writer = index.writer_with_num_threads(1, 15_000_000).unwrap();
-        for (tags, edges) in docs {
-            writer
-                .add_document(doc!(tag => *tags, incoming => *edges, basic => *edges))
-                .unwrap();
-        }
-        writer.commit().unwrap();
-        let reader = index.reader().unwrap();
-        (index, reader)
-    }
-
-    /// doc 0: `NNS` + `nsubj` on token 1 (same token). doc 1: `NN`/`NNS` on tokens 0-1, `nsubj`
-    /// only on token 2 (`DT`). doc 2: `NN` + `nsubj` on token 0.
-    const DOCS: [(&str, &str); 3] = [
-        ("NN|NNS|DT", "|nsubj|"),
-        ("NNS|NN|DT", "||nsubj"),
-        ("NN|DT", "nsubj|"),
-    ];
-
-    async fn refine(filter: &CandidateFilter, ratio: f64) -> Vec<DocId> {
-        let (index, reader) = slot_index(&DOCS);
-        let searcher = reader.searcher();
-        let segment_reader = searcher.segment_reader(0);
-        let schema = index.schema();
-        let terms = SegmentTerms::new(segment_reader);
-        refine_same_token_with(filter, &terms, segment_reader, &schema, vec![0, 1, 2], ratio)
-            .await
-            .unwrap()
-    }
-
-    fn tag_nn_with_nsubj(edge_field: &str) -> CandidateFilter {
-        CandidateFilter::SameToken(vec![
-            CandidateFilter::regex("tag", "NN.*"),
-            CandidateFilter::term(edge_field, "nsubj"),
-        ])
-    }
-
-    #[tokio::test]
-    async fn regex_child_is_a_union_of_its_terms() {
-        // `tag=/NN.*/` expands to `NN` and `NNS`. Doc 0's matching token is `NNS` (never `NN`):
-        // the child's positions must be NN ∪ NNS, then intersected with `nsubj`'s. Intersecting
-        // term by term (NN ∩ NNS ∩ nsubj) would be empty on every doc and drop 0 and 2.
-        assert_eq!(refine(&tag_nn_with_nsubj("incoming_edges"), 1.0).await, [0, 2]);
-    }
-
-    #[tokio::test]
-    async fn only_top_level_same_tokens_narrow() {
-        let node = tag_nn_with_nsubj("incoming_edges");
-        let conjunct = CandidateFilter::And(vec![node.clone(), CandidateFilter::term("tag", "DT")]);
-        assert_eq!(refine(&conjunct, 1.0).await, [0, 2]);
-        // Under an `Or`, another branch may hold instead: left alone.
-        let disjunct = CandidateFilter::Or(vec![node, CandidateFilter::term("tag", "DT")]);
-        assert_eq!(refine(&disjunct, 1.0).await, [0, 1, 2]);
-    }
-
-    #[tokio::test]
-    async fn field_without_positions_skips_the_node() {
-        // An old split's edge field (`record: basic`) cannot answer a same-token check.
-        assert_eq!(refine(&tag_nn_with_nsubj("basic_edges"), 1.0).await, [0, 1, 2]);
-    }
-
-    #[tokio::test]
-    async fn cost_guard_skips_a_node_whose_rarest_child_is_too_common() {
-        // With the threshold at 0 no node is worth refining: candidates are left unchanged.
-        assert_eq!(refine(&tag_nn_with_nsubj("incoming_edges"), 0.0).await, [0, 1, 2]);
-    }
-}
+#[path = "../test/unit/candidates.rs"]
+mod tests;
