@@ -14,6 +14,9 @@ path = "src/lib.rs"
 name = "rustie-serve"
 path = "src/bin/rustie-serve.rs"
 
+[[bin]]
+name = "rustie-bench"
+path = "src/bin/rustie-bench.rs"
 [dependencies]
 anyhow = "1"
 axum = "0.8"

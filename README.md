@@ -183,6 +183,19 @@ out next to this repository. To use a new fork commit, change the `rev` in all o
 and temporarily point the entries at `path = "<clone>/quickwit/<crate>"`. The hooks and how to
 rebase them are in the fork's `docs/rustie-fork.md`.
 
+## Wiki5k vs Odinson benchmark
+
+Index + search timing on `data/wiki5k` against Odinson (`v0.5.0-api.zip`, local Lucene)
+vs this stack (Quickwit → MinIO). Event rules skipped.
+
+```bash
+./benchmarks/wiki5k/run.sh                 # both (downloads JDK 8 into .cache if needed)
+./benchmarks/wiki5k/run.sh --rustie-only
+REPS=20 ./benchmarks/wiki5k/run.sh
+```
+
+See [`benchmarks/wiki5k/README.md`](benchmarks/wiki5k/README.md).
+
 ## Build
 
 Requirements:

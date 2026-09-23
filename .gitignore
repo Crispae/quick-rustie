@@ -1,2 +1,13 @@
 /target
 /data
+/benchmarks/wiki5k/results/
+/benchmarks/wiki5k/.cache/
+/benchmarks/wiki5k/odinson-api/
+/benchmarks/wiki5k/odinson-java/out/
+/benchmarks/wiki5k/odinson-java/Wiki5kOdinsonBench.jar
+/benchmarks/wiki5k/odinson-bench/target/
+/benchmarks/wiki5k/odinson-bench/project/target/
+/benchmarks/wiki5k/odinson-bench/project/project/
+# Large local Odinson distribution (keep out of git)
+/benchmarks/wiki5k/v0.5.0-api.zip
+/benchmarks/
