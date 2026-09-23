@@ -1,7 +1,9 @@
-# Single-node (or first peer) rustie-node config for local MinIO.
+# Single-node (or first peer) rustie-node config for local MinIO + Postgres metastore.
 # `enabled_services` below is authoritative unless you pass `--service …` on the CLI.
 # Prefer searcher + metastore so every node opens this metastore URI directly.
 #
+#   docker run -d --name rustie-postgres -p 5433:5432 \
+#     -e POSTGRES_USER=rustie -e POSTGRES_PASSWORD=rustie -e POSTGRES_DB=rustie postgres:16
 #   cargo run -p rustie-node -- --config configs/rustie-node.yaml
 #
 version: 0.8
@@ -22,8 +24,9 @@ gossip_listen_port: 7282
 
 data_dir: /tmp/rustie-node-data
 
-# Same layout as rustie-index / rustie-serve (bucket rustie-dev, prefix quick-rustie).
-metastore_uri: s3://rustie-dev/quick-rustie/metastore
+# Postgres metastore (Quickwit runs schema migrations on connect).
+# Split files stay on MinIO under default_index_root_uri.
+metastore_uri: postgres://rustie:rustie@127.0.0.1:5433/rustie
 default_index_root_uri: s3://rustie-dev/quick-rustie/indexes
 
 storage:
@@ -33,6 +36,13 @@ storage:
     access_key_id: minioadmin
     secret_access_key: minioadmin
     region: us-east-1
+
+# Without split_cache, live ReportSplitsRequest from the indexer is a no-op.
+searcher:
+  split_cache:
+    max_num_bytes: 10GB
+    max_num_splits: 10000
+    num_concurrent_downloads: 1
 
 enabled_services:
   - searcher

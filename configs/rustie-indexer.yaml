@@ -1,0 +1,38 @@
+# Gossip-only rustie-index member of rustie-cluster.
+# Neither searcher nor indexer service is enabled (loaded with an empty service set), so no
+# control plane schedules this process and no root dials it. The IndexingService in-process
+# still runs VecSource lanes; this config is only for cluster membership + split reports.
+#
+#   cargo run -p rustie-indexer --bin rustie-index -- \
+#     --cluster-config configs/rustie-indexer.yaml \
+#     --data "data/…"
+#
+version: 0.8
+
+cluster_id: rustie-cluster
+node_id: rustie-indexer-1
+peer_seeds:
+  - 127.0.0.1:7282
+
+listen_address: 127.0.0.1
+advertise_address: 127.0.0.1
+rest:
+  listen_port: 7290
+grpc_listen_port: 7291
+gossip_listen_port: 7292
+
+data_dir: /tmp/rustie-indexer-data
+
+metastore_uri: postgres://rustie:rustie@127.0.0.1:5433/rustie
+default_index_root_uri: s3://rustie-dev/quick-rustie/indexes
+
+storage:
+  s3:
+    flavor: minio
+    endpoint: http://127.0.0.1:9010
+    access_key_id: minioadmin
+    secret_access_key: minioadmin
+    region: us-east-1
+
+# Services are overridden to [] at load time; leave empty or omit.
+enabled_services: []

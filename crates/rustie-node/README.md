@@ -17,10 +17,12 @@ not the Odinson HTTP API (`rustie-serve` is the gateway / embedded laptop search
 ```
 
 - Matching is Quickwit leaf search + the `rustie` extension; this binary only hosts that stack.
-- **Every node** should enable `searcher` + `metastore` and open the **same** shared file/S3
-  metastore URI directly (no single-owner metastore proxy).
-- Indexing remains batch `rustie-index` for now; adding `indexer` to `enabled_services` is for a
-  later live-`report_splits` path.
+- **Every node** should enable `searcher` + `metastore` and open the **same** Postgres (default)
+  or file/S3 metastore URI directly (no single-owner metastore proxy).
+- Enable `searcher.split_cache` so live `ReportSplitsRequest`s from
+  `rustie-index --cluster-config` fill the on-disk split cache.
+- Indexing remains batch `rustie-index` (optionally gossip-joined); do not enable `indexer` on
+  this node unless you intentionally want Quickwit’s control-plane scheduling.
 
 ## Roles / config
 
@@ -31,7 +33,7 @@ omitting the flag lets the config (and `QW_ENABLED_SERVICES`) win.
 | --- | --- |
 | Single node | `peer_seeds: []`; one process |
 | Multi node | Shared `cluster_id`; unique `node_id`, ports, `data_dir`; `peer_seeds` = peers’ **gossip** addresses |
-| Indexer (later) | Add `indexer` under `enabled_services` (keep `metastore`) |
+| Live split reports | `searcher.split_cache` on nodes + `rustie-index --cluster-config configs/rustie-indexer.yaml` |
 
 ## Run (single node)
 
@@ -45,7 +47,7 @@ Gateway:
 ```bash
 cargo run --release -p rustie-search --bin rustie-serve -- \
   --index-id pubmed-slots \
-  --metastore-uri 's3://rustie-dev/metastore' \
+  --metastore-uri 'postgres://rustie:rustie@127.0.0.1:5433/rustie' \
   --searcher-endpoint 127.0.0.1:7281
 ```
 
@@ -67,7 +69,7 @@ cargo run --release -p rustie-node -- --config configs/rustie-node-2.yaml
 
 cargo run --release -p rustie-search --bin rustie-serve -- \
   --index-id pubmed-slots \
-  --metastore-uri 's3://rustie-dev/metastore' \
+  --metastore-uri 'postgres://rustie:rustie@127.0.0.1:5433/rustie' \
   --searcher-endpoint 127.0.0.1:7281 \
   --bind 127.0.0.1:8080
 ```

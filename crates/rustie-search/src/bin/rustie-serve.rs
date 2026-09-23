@@ -39,11 +39,13 @@ struct Args {
 
     #[arg(long, default_value = "ie-postings")]
     index_id: String,
-    /// Metastore URI. Default: `s3://<bucket>/metastore`.
-    #[arg(long)]
+    /// Metastore URI. Default: `RUSTIE_METASTORE_URI`, else
+    /// `postgres://rustie:rustie@127.0.0.1:5433/rustie`.
+    #[arg(long, env = "RUSTIE_METASTORE_URI")]
     metastore_uri: Option<String>,
 
     /// Re-open the metastore this often (seconds) to see newly indexed splits; 0 disables.
+    /// Needed for file-backed (`s3://`) metastores; Postgres is visible without refresh.
     #[arg(long, default_value_t = 30)]
     refresh_secs: u64,
     #[arg(long, default_value_t = 1_000)]

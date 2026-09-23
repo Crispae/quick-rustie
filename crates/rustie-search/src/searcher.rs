@@ -19,20 +19,18 @@ use std::time::{Duration, Instant};
 
 use bytesize::ByteSize;
 use quickwit_config::{CacheConfig, SearcherConfig, SplitCacheLimits};
-use quickwit_metastore::{
-    IndexMetadataResponseExt, ListSplitsRequestExt, MetastoreServiceStreamSplitsExt, SplitState,
-};
-use quickwit_proto::metastore::{
-    IndexMetadataRequest, ListSplitsRequest, MetastoreService, MetastoreServiceClient,
-};
-use quickwit_proto::search::{CountHits, PartialHit, ReportSplit, SearchRequest, SearchResponse};
+use quickwit_proto::metastore::MetastoreServiceClient;
+use quickwit_proto::search::{CountHits, PartialHit, SearchRequest, SearchResponse};
 use quickwit_search::{
     ClusterClient, SearchJobPlacer, SearchServiceClient, SearchServiceImpl, SearcherContext,
     SearcherPool, create_search_client_from_grpc_addr, root_search,
 };
 use quickwit_storage::{SearchSplitCache, StorageResolver};
 use rustie_compiler::{CompiledQuery, QueryCompiler};
-use rustie_indexer::{IndexSummary, IndexerOptions, MinioConfig, index_summary, open_metastore};
+use rustie_indexer::{
+    IndexSummary, IndexerOptions, MinioConfig, index_summary, open_metastore,
+    published_report_splits,
+};
 use tokio::sync::RwLock;
 use tracing::warn;
 
@@ -176,51 +174,28 @@ impl EmbeddedStack {
 /// can start fetching them.
 ///
 /// Quickwit's own on-disk split cache expects indexers to gossip newly published splits to
-/// searchers over gRPC (`SearchJobPlacer`/`report_splits`, see the fork's
-/// `quickwit-search/src/search_job_placer.rs`); `rustie-search`'s single-process, MinIO-only
-/// searcher has no such channel, so nothing ever calls `SearchSplitCache::report_splits` and the
-/// cache silently never downloads anything unless something does this explicitly. This is that
-/// something: it lists the index's published splits from the metastore and reports each one.
+/// searchers over gRPC (`SearchJobPlacer`/`report_splits`). Embedded mode has no such channel,
+/// so this lists published splits from the metastore and reports each one.
 ///
 /// Best-effort: an index that doesn't exist yet, or a transient metastore error, only means the
 /// split cache stays empty until the next successful call — this must never fail `connect` or
-/// `refresh`, matching how the rest of this searcher tolerates the index not existing yet.
+/// `refresh`. With Postgres, new splits are visible without refresh; refresh still matters for
+/// file-backed (`s3://`) metastores.
 ///
 /// Kept for **embedded** mode. Clustered `rustie-node` searchers get live `report_splits` from
-/// an indexer-role node (phase 2); this stand-in is not used in gateway mode.
+/// a gossip-joined `rustie-index` via `SearchJobPlacer`; this stand-in is not used in gateway mode.
 async fn report_splits_to_cache(
     metastore: &MetastoreServiceClient,
     index_id: &str,
     split_cache: &SearchSplitCache,
 ) {
-    let result: anyhow::Result<()> = async {
-        let index_metadata = metastore
-            .clone()
-            .index_metadata(IndexMetadataRequest::for_index_id(index_id.to_string()))
-            .await?
-            .deserialize_index_metadata()?;
-        let storage_uri = index_metadata.index_uri().to_string();
-        let request = ListSplitsRequest::try_from_index_uid(index_metadata.index_uid)?;
-        let splits = metastore
-            .clone()
-            .list_splits(request)
-            .await?
-            .collect_splits()
-            .await?;
-        let report_splits = splits
-            .into_iter()
-            .filter(|split| split.split_state == SplitState::Published)
-            .map(|split| ReportSplit {
-                split_id: split.split_metadata.split_id.to_string(),
-                storage_uri: storage_uri.clone(),
-            })
-            .collect();
-        split_cache.report_splits(report_splits);
-        Ok(())
-    }
-    .await;
-    if let Err(err) = result {
-        warn!(%err, index_id, "could not report splits to the on-disk split cache");
+    match published_report_splits(metastore, index_id).await {
+        Ok(report_splits) => {
+            split_cache.report_splits(report_splits);
+        }
+        Err(err) => {
+            warn!(%err, index_id, "could not report splits to the on-disk split cache");
+        }
     }
 }
 
@@ -305,7 +280,9 @@ impl Searcher {
     }
 
     /// Re-open the metastore so splits published since the last (re)load become visible.
-    /// The file-backed metastore does not poll on its own. Embedded caches are kept.
+    /// File-backed (`s3://`) metastores do not poll on their own; Postgres reflects publishes
+    /// immediately, so refresh is mainly useful for s3:// metastores and for re-reporting
+    /// splits into an embedded on-disk cache. Embedded caches are kept.
     /// In gateway mode, only the local summary metastore is refreshed (search hits the remote).
     pub async fn refresh(&self) -> Result<()> {
         match &self.backend {

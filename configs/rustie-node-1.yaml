@@ -1,4 +1,4 @@
-# rustie-node 1 — pubmed-slots on local MinIO
+# rustie-node 1 — pubmed-slots on local MinIO + Postgres metastore
 version: 0.8
 
 cluster_id: rustie-cluster
@@ -15,7 +15,7 @@ gossip_listen_port: 7282
 
 data_dir: /tmp/rustie-node-1-data
 
-metastore_uri: s3://rustie-dev/metastore
+metastore_uri: postgres://rustie:rustie@127.0.0.1:5433/rustie
 default_index_root_uri: s3://rustie-dev/indexes
 
 storage:
@@ -25,6 +25,12 @@ storage:
     access_key_id: minioadmin
     secret_access_key: minioadmin
     region: us-east-1
+
+searcher:
+  split_cache:
+    max_num_bytes: 10GB
+    max_num_splits: 10000
+    num_concurrent_downloads: 1
 
 enabled_services:
   - searcher

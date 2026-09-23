@@ -7,17 +7,24 @@ same Quickwit tag as the root crate.
 ```
 data/*.json (Odinson) ──rustie-schema flatten──▶ sentence docs
         ──prune/validate vs doc mapping──▶ Vec source ──▶ IndexingService ──▶ s3://<bucket>/indexes/ie-postings
-                                                           file-backed metastore ──▶ s3://<bucket>/metastore
+                                                           Postgres metastore (default) / optional s3:// file-backed
 ```
 
 ## CLI
 
 ```bash
 docker compose -f docker-compose.minio.yml up -d      # if rustie-minio is not running
+docker run -d --name rustie-postgres -p 5433:5432 \
+  -e POSTGRES_USER=rustie -e POSTGRES_PASSWORD=rustie -e POSTGRES_DB=rustie postgres:16
 export PROTOC=/path/to/protoc                         # needed to build quickwit-proto
 
-# smoke run
+# smoke run (Postgres metastore by default)
 cargo run -p rustie-indexer --bin rustie-index -- --data "data/processed_pubmed22n0008 (2)" --limit 10
+
+# with live split-cache reports to a running rustie-node
+cargo run -p rustie-indexer --bin rustie-index -- \
+  --cluster-config configs/rustie-indexer.yaml \
+  --data "data/processed_pubmed22n0008 (2)" --limit 10
 
 # full run (re-runnable, see "Idempotency")
 cargo run --release -p rustie-indexer --bin rustie-index -- --data "data/processed_pubmed22n0008 (2)"
@@ -30,7 +37,8 @@ cargo run --release -p rustie-indexer --bin rustie-index -- --data "data/process
 | `--batch-size` | 200 | files per pipeline run (≈ one split before merges) |
 | `--endpoint` / `--bucket` / `--access-key` / `--secret-key` | `MINIO_*` env, else local `rustie-minio` | prefer env for the secret |
 | `--index-id` | `ie-postings` | |
-| `--metastore-uri` / `--index-root-uri` | `s3://<bucket>/metastore`, `s3://<bucket>/indexes` | |
+| `--metastore-uri` / `--index-root-uri` | `RUSTIE_METASTORE_URI` or `postgres://rustie:rustie@127.0.0.1:5433/rustie`, `s3://<bucket>/indexes` | |
+| `--cluster-config` | – | join rustie-cluster as gossip-only (`RUSTIE_CLUSTER_CONFIG`); live split reports via Quickwit's uploader → placer (no per-batch metastore re-list; cache is best-effort prefetch + query-time warming) |
 | `--threads` | 0 (all cores) | threads reading, decompressing, flattening and validating input; `1` = serial. Batch content, order and checkpoints are identical for any value |
 | `--pipelines` | 1 | indexing pipelines at once, each on its own Quickwit source ("lane"); each holds a batch in memory. Re-runs skip or resume batches by content in every lane, so the value may differ between runs |
 | `--split-num-docs-target` | 500000 | splits at or above this many documents are never merged again; applies when the index is created (`--overwrite` to change) |
@@ -110,15 +118,21 @@ indexer.shutdown().await;
   2 of 20 cores). Stock Quickwit also spends about 25 µs per document spawning a vec-source
   pipeline (it round-trips the documents through JSON); the fork fixes that. The run's final
   line reports the breakdown (with several lanes the `indexing` figure sums the lanes).
-- **Single writer.** The file-backed metastore on S3 assumes one writer per metastore URI; do not run
-  two indexers against the same metastore concurrently.
+- **Cluster join (`--cluster-config`).** The indexer joins as a gossip-only member so the
+  uploader's early `ReportSplitsRequest` reaches searchers via Quickwit's `SearchJobPlacer`.
+  There is no per-batch metastore re-list: the on-disk split cache is best-effort prefetch;
+  misses fall back to object storage and a later query re-enqueues the download.
+- **Single writer.** Postgres supports concurrent readers; prefer one indexer writer per index.
+  File-backed (`s3://`) metastores assume one writer per metastore URI.
 
 ## Tests
 
 ```bash
 cargo test -p rustie-indexer                          # unit tests, no services needed
 RUSTIE_MINIO_TEST=1 cargo test -p rustie-indexer --test minio_integration -- --ignored
+RUSTIE_PG_TEST=1 cargo test -p rustie-indexer --test postgres_integration -- --ignored
 ```
 
-The integration test uses an isolated `it-<pid>-<ts>/` prefix and deletes its index afterwards
-(a 58-byte `metastore/manifest.json` is left behind).
+The MinIO integration test uses an isolated `it-<pid>-<ts>/` prefix and deletes its index afterwards
+(a 58-byte `metastore/manifest.json` is left behind). The Postgres test needs MinIO for split
+files and Postgres for the metastore; it deletes its index afterwards.

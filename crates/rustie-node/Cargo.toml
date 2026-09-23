@@ -24,7 +24,7 @@ rustie-leaf = { path = "../rustie-leaf" }
 
 quickwit-common = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 quickwit-config = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
-quickwit-metastore = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-metastore = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0", features = ["postgres"] }
 quickwit-serve = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 quickwit-storage = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 

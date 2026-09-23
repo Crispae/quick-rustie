@@ -58,13 +58,29 @@ single- or multi-node Quickwit
 ```
 
 - **N = 1:** one `rustie-node` with empty `peer_seeds` is a valid cluster.
-- **Metastore:** every `rustie-node` enables the metastore role and opens the shared S3/file URI
-  directly (same as today). Do not use a single-owner metastore proxy for this stack.
+- **Metastore:** Postgres is the default (`postgres://rustie:rustie@127.0.0.1:5433/rustie`).
+  Every `rustie-node` enables the metastore role and opens that URI directly. Existing
+  file/S3 metastores remain readable via `--metastore-uri s3://…` until deleted; switching
+  to Postgres means **re-indexing**, not migrating. Do not use a single-owner metastore proxy.
 - **Gateway SPOF:** phase 1 dials one `--searcher-endpoint`; leaf fan-out behind that node is
   resilient. Multi-endpoint root failover is follow-up debt.
-- **Live `report_splits`:** deferred; embedded mode still uses metastore polling
-  (`report_splits_to_cache` / `--refresh-secs`). Clustered nodes get Quickwit’s placer path once
-  an indexer-role node is on the cluster.
+- **Live `report_splits`:** `rustie-index --cluster-config configs/rustie-indexer.yaml` joins
+  the cluster as a gossip-only member, builds a `SearcherPool` from membership, and
+  subscribes `SearchJobPlacer` to the indexing `EventBroker`. The uploader's early
+  `ReportSplitsRequest` (Quickwit's intentional prefetch, before the object finishes uploading)
+  reaches each searcher's on-disk split cache via rendezvous-hash affinity. Nodes need
+  `searcher.split_cache` in their YAML or reports are dropped. The cache is best-effort: a
+  failed early download drops the candidate; search still reads object storage, and a later
+  query `touch` re-enqueues the split once the object exists. Embedded mode still uses
+  metastore listing (`report_splits_to_cache` / `--refresh-secs`).
+
+```
+  rustie-index (gossip-only) ──ReportSplitsRequest──▶ EventBroker ──▶ SearchJobPlacer
+                                                                        │ rendezvous hash
+                                                                        ▼
+                                                              rustie-node searcher-split-cache
+                                                              (miss → S3; touch re-enqueues)
+```
 
 ## What replaced what (RustIE → quick-rustie)
 
