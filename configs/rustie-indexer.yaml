@@ -24,7 +24,7 @@ gossip_listen_port: 7292
 data_dir: /tmp/rustie-indexer-data
 
 metastore_uri: postgres://rustie:rustie@127.0.0.1:5433/rustie
-default_index_root_uri: s3://rustie-dev/quick-rustie/indexes
+default_index_root_uri: s3://rustie-dev/indexes
 
 storage:
   s3:
