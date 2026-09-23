@@ -44,7 +44,28 @@ failure, `504` timeout.
 
 Flags: `--bind` (default `127.0.0.1:8080`), `--index-id`, `--metastore-uri`, `--endpoint/--bucket/
 --access-key/--secret-key` (or `MINIO_*` env), `--max-limit`, `--timeout-secs`,
-`--max-concurrent-searches`, `--refresh-secs`.
+`--max-concurrent-searches`, `--refresh-secs`, **`--searcher-endpoint`** (optional gRPC addr of a
+`rustie-node`; when set, this process is a gateway and does not embed the leaf stack).
+
+## Topologies
+
+| Mode | How |
+| --- | --- |
+| **Embedded** (default) | No `--searcher-endpoint`. In-process one-node pool; call `rustie_leaf::register()` here. Laptop / MinIO smoke. |
+| **Single-node Quickwit** | Run [`rustie-node`](../rustie-node) with empty `peer_seeds` (searcher + metastore). Point `--searcher-endpoint` at its **gRPC** port. |
+| **Multi-node** | Several `rustie-node` processes, shared `cluster_id` + peer gossip. Gateway dials **one** searcher’s gRPC (root-entry SPOF for now; leaf fan-out behind that node is Quickwit’s). |
+
+Every `rustie-node` enables **metastore + searcher** and opens the shared file/S3 metastore URI directly (not upstream’s single-owner metastore proxy). Gateway still calls `open_metastore` itself for `GET /v1/index` (`summary()`); search goes over gRPC `SearchService::root_search` only.
+
+```bash
+# Terminal 1 — Quickwit searcher (registers rustie-leaf)
+cargo run --release -p rustie-node -- --config configs/rustie-node.yaml
+
+# Terminal 2 — Odinson HTTP API as gateway
+cargo run --release -p rustie-search --bin rustie-serve -- \
+  --searcher-endpoint 127.0.0.1:7281
+```
+
 
 ## Library
 

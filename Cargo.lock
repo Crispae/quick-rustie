@@ -1159,7 +1159,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -1264,6 +1264,8 @@ dependencies = [
  "compression-core",
  "flate2",
  "memchr",
+ "zstd 0.14.0",
+ "zstd-safe 8.0.0",
 ]
 
 [[package]]
@@ -1271,6 +1273,18 @@ name = "compression-core"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e8ccc4ea9f6acc32d102c0f6d471d11d913ad15f20c04de743374861fa1d414"
+
+[[package]]
+name = "const-hex"
+version = "1.19.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e59eef12462b0f9b0a3620219be5d639afd79fe39dff0a42c3997061f9298b4"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "proptest",
+ "serde_core",
+]
 
 [[package]]
 name = "const-oid"
@@ -1685,6 +1699,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
+name = "elasticsearch-dsl"
+version = "0.4.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9445aba099fdf52dea22534cf953b918d1e4cbb799c99507c9cc96188d9c230"
+dependencies = [
+ "chrono",
+ "num-traits",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "elliptic-curve"
 version = "0.13.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1798,6 +1824,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d2f06b9cac1506ece98fe3231e3cc9c4410ec3d5b1f24ae1c8946f0742cdefc"
 dependencies = [
  "version_check",
+]
+
+[[package]]
+name = "evmap"
+version = "11.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b8874945f036109c72242964c1174cf99434e30cfa45bf45fedc983f50046f8"
+dependencies = [
+ "hashbag",
+ "left-right",
+ "smallvec",
 ]
 
 [[package]]
@@ -2028,6 +2065,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "generator"
+version = "0.8.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54ade96dc9003043bce7c035c85a9df5a858bfb2039c5a2e6fdf00f324f6c551"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "log",
+ "rustversion",
+ "windows-link",
+ "windows-result",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2168,6 +2220,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashbag"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7040a10f52cba493ddb09926e15d10a9d8a28043708a405931fe4c6f19fac064"
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2208,6 +2266,30 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash 0.2.0",
+]
+
+[[package]]
+name = "headers"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3314d5adb5d94bcdf56771f2e50dbbc80bb4bdf88967526706205ac9eff24eb"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "headers-core",
+ "http 1.5.0",
+ "httpdate",
+ "mime",
+ "sha1 0.10.7",
+]
+
+[[package]]
+name = "headers-core"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
+dependencies = [
+ "http 1.5.0",
 ]
 
 [[package]]
@@ -2797,6 +2879,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "left-right"
+version = "0.11.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bc015ded5d9b3054dbbdb63332cdd6ee42352ccef19e911e25117490e2f48ee"
+dependencies = [
+ "crossbeam-utils",
+ "loom",
+ "slab",
+]
+
+[[package]]
 name = "levenshtein_automata"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2911,6 +3004,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "loom"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "419e0dc8046cb947daa77eb95ae174acfbddb7673b4151f56d1eed8e93fbfaca"
+dependencies = [
+ "cfg-if",
+ "generator",
+ "scoped-tls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "lru"
 version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3006,6 +3112,33 @@ checksum = "89550ee9f79e88fef3119de263694973a8adb26c21d75322164fb8c493039fe2"
 dependencies = [
  "portable-atomic",
  "rapidhash",
+]
+
+[[package]]
+name = "metrics-exporter-prometheus"
+version = "0.18.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1db0d8f1fc9e62caebd0319e11eaec5822b0186c171568f0480b46a0137f9108"
+dependencies = [
+ "base64 0.22.1",
+ "evmap",
+ "indexmap 2.14.2",
+ "metrics",
+ "metrics-util",
+ "quanta",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "metrics-opentelemetry"
+version = "0.24032.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df39cbce71be50bf6c438f95940f166991a3845a53dcf68c77f08270cf4e327e"
+dependencies = [
+ "metrics",
+ "opentelemetry",
+ "parking_lot",
+ "portable-atomic",
 ]
 
 [[package]]
@@ -3304,6 +3437,86 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry-appender-tracing"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c0080f0dc1d7c786f467cd85a4e395fcab11ee852004f39a29a18ab7c25d837"
+dependencies = [
+ "opentelemetry",
+ "tracing",
+ "tracing-core",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "opentelemetry-http"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5683015d09e2df236ef005b17f6f196f0d5f6313c4fa43a7b6a53b52776e4331"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "http 1.5.0",
+ "opentelemetry",
+ "reqwest",
+]
+
+[[package]]
+name = "opentelemetry-otlp"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9966929966d17620d7c316c643ba62631826e10021409357772d5eea84f62c35"
+dependencies = [
+ "http 1.5.0",
+ "httpdate",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
+ "prost",
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tonic",
+ "tonic-types",
+]
+
+[[package]]
+name = "opentelemetry-proto"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56d658ba1faf63f7b9c492cfbe6e0ec365440a16132d3270c1065f7b33f1b638"
+dependencies = [
+ "base64 0.22.1",
+ "const-hex",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "prost",
+ "serde",
+ "tonic",
+ "tonic-prost",
+]
+
+[[package]]
+name = "opentelemetry_sdk"
+version = "0.32.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b59f80e1ac4d5ff7a2db8fb6c80badb7f0f3f858211fba08dd9aaec750894f9"
+dependencies = [
+ "futures-channel",
+ "futures-executor",
+ "futures-util",
+ "opentelemetry",
+ "percent-encoding",
+ "portable-atomic",
+ "rand 0.9.5",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "ordered-float"
 version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3423,7 +3636,7 @@ dependencies = [
  "snap",
  "thrift",
  "twox-hash",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -4210,6 +4423,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "quickwit-compaction"
+version = "0.9.0"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "itertools 0.14.0",
+ "quickwit-actors",
+ "quickwit-cluster",
+ "quickwit-common",
+ "quickwit-config",
+ "quickwit-doc-mapper",
+ "quickwit-indexing",
+ "quickwit-metastore",
+ "quickwit-metrics",
+ "quickwit-proto",
+ "quickwit-storage",
+ "serde_json",
+ "time",
+ "tokio",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
 name = "quickwit-config"
 version = "0.9.0"
 source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
@@ -4238,6 +4476,35 @@ dependencies = [
  "toml",
  "tracing",
  "utoipa 4.2.3",
+]
+
+[[package]]
+name = "quickwit-control-plane"
+version = "0.9.0"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytesize",
+ "fnv",
+ "futures",
+ "itertools 0.15.0",
+ "lru 0.18.4",
+ "quickwit-actors",
+ "quickwit-cluster",
+ "quickwit-common",
+ "quickwit-config",
+ "quickwit-ingest",
+ "quickwit-metastore",
+ "quickwit-metrics",
+ "quickwit-proto",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "tokio",
+ "tracing",
+ "ulid",
 ]
 
 [[package]]
@@ -4425,6 +4692,66 @@ dependencies = [
 ]
 
 [[package]]
+name = "quickwit-jaeger"
+version = "0.9.0"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+dependencies = [
+ "async-trait",
+ "itertools 0.15.0",
+ "postcard",
+ "prost",
+ "prost-types",
+ "quickwit-common",
+ "quickwit-config",
+ "quickwit-metrics",
+ "quickwit-opentelemetry",
+ "quickwit-proto",
+ "quickwit-query",
+ "quickwit-search",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
+name = "quickwit-janitor"
+version = "0.9.0"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "itertools 0.15.0",
+ "quickwit-actors",
+ "quickwit-common",
+ "quickwit-compaction",
+ "quickwit-config",
+ "quickwit-doc-mapper",
+ "quickwit-index-management",
+ "quickwit-indexing",
+ "quickwit-metastore",
+ "quickwit-metrics",
+ "quickwit-parquet-engine",
+ "quickwit-proto",
+ "quickwit-query",
+ "quickwit-search",
+ "quickwit-storage",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tracing",
+ "utoipa 4.2.3",
+]
+
+[[package]]
 name = "quickwit-macros"
 version = "0.9.0"
 source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
@@ -4573,7 +4900,7 @@ dependencies = [
  "tracing-opentelemetry",
  "ulid",
  "utoipa 4.2.3",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -4643,6 +4970,78 @@ dependencies = [
 ]
 
 [[package]]
+name = "quickwit-serve"
+version = "0.9.0"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "bytesize",
+ "elasticsearch-dsl",
+ "flate2",
+ "futures",
+ "futures-util",
+ "glob",
+ "hex",
+ "http 1.5.0",
+ "http-body 1.1.0",
+ "http-serde",
+ "humantime",
+ "hyper-util",
+ "itertools 0.15.0",
+ "mime_guess",
+ "opentelemetry",
+ "percent-encoding",
+ "prost",
+ "prost-types",
+ "quickwit-actors",
+ "quickwit-cluster",
+ "quickwit-common",
+ "quickwit-compaction",
+ "quickwit-config",
+ "quickwit-control-plane",
+ "quickwit-doc-mapper",
+ "quickwit-index-management",
+ "quickwit-indexing",
+ "quickwit-ingest",
+ "quickwit-jaeger",
+ "quickwit-janitor",
+ "quickwit-metastore",
+ "quickwit-metrics",
+ "quickwit-opentelemetry",
+ "quickwit-proto",
+ "quickwit-query",
+ "quickwit-search",
+ "quickwit-storage",
+ "quickwit-telemetry-exporters",
+ "quickwit-transport",
+ "regex",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "serde_qs",
+ "serde_with",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tokio-rustls 0.26.5",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tonic-health",
+ "tonic-reflection",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-opentelemetry",
+ "utoipa 4.2.3",
+ "warp",
+ "zstd 0.13.3",
+]
+
+[[package]]
 name = "quickwit-storage"
 version = "0.9.0"
 source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
@@ -4683,6 +5082,30 @@ dependencies = [
  "tokio-util",
  "tracing",
  "ulid",
+]
+
+[[package]]
+name = "quickwit-telemetry-exporters"
+version = "0.9.0"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+dependencies = [
+ "anyhow",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "metrics-opentelemetry",
+ "metrics-util",
+ "opentelemetry",
+ "opentelemetry-appender-tracing",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "quickwit-common",
+ "quickwit-metrics",
+ "serde_json",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4933,6 +5356,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "reqwest"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "futures-core",
+ "http 1.5.0",
+ "http-body 1.1.0",
+ "http-body-util",
+ "hyper 1.11.1",
+ "hyper-util",
+ "js-sys",
+ "log",
+ "percent-encoding",
+ "pin-project-lite",
+ "sync_wrapper",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tower-service",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "rfc6979"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5093,6 +5545,27 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "rustie-node"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "itertools 0.14.0",
+ "quickwit-common",
+ "quickwit-config",
+ "quickwit-metastore",
+ "quickwit-serve",
+ "quickwit-storage",
+ "rustie-leaf",
+ "serde",
+ "serde_yaml",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -5323,6 +5796,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "scoped-tls"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5453,6 +5932,18 @@ dependencies = [
  "itoa",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "serde_qs"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "475b9310e272827d34113bf8679b6dfb7fa0023ee049764ba003f8f984e8b5d1"
+dependencies = [
+ "itoa",
+ "percent-encoding",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
@@ -5788,6 +6279,9 @@ name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
+dependencies = [
+ "futures-core",
+]
 
 [[package]]
 name = "synstructure"
@@ -5870,7 +6364,7 @@ dependencies = [
  "typetag",
  "uuid",
  "winapi",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -5941,7 +6435,7 @@ dependencies = [
  "tantivy-bitpacker",
  "tantivy-common",
  "tantivy-fst",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -6261,7 +6755,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -6274,6 +6768,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "tonic-health"
+version = "0.14.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcfab99db777fba2802f0dfa861d1628d1ae916fb199d29819941f139ae85082"
+dependencies = [
+ "prost",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
 ]
 
 [[package]]
@@ -6304,6 +6811,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonic-reflection"
+version = "0.14.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acccd136a4bf19810a1fde9c74edc6129b42a66b44d0c1c8aaa67aeb49a146a7"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
+]
+
+[[package]]
+name = "tonic-types"
+version = "0.14.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73ab1b02061f83d519bba3caa167f88f261ef05720ab8ebc954ade70de3348e8"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tonic",
+]
+
+[[package]]
 name = "tower"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6320,6 +6852,29 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "tower-http"
+version = "0.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
+dependencies = [
+ "async-compression",
+ "bitflags 2.13.2",
+ "bytes",
+ "futures-core",
+ "futures-util",
+ "http 1.5.0",
+ "http-body 1.1.0",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -6395,6 +6950,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6404,12 +6969,16 @@ dependencies = [
  "nu-ansi-term",
  "once_cell",
  "regex-automata",
+ "serde",
+ "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
+ "time",
  "tracing",
  "tracing-core",
  "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]
@@ -6696,6 +7265,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "warp"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a808122a8a77eecdabaefd88ddb1913c4be5ea1465399f63ba64c7aa705fea"
+dependencies = [
+ "bytes",
+ "futures-channel",
+ "futures-util",
+ "headers",
+ "http 1.5.0",
+ "http-body 1.1.0",
+ "http-body-util",
+ "hyper 1.11.1",
+ "hyper-util",
+ "log",
+ "mime",
+ "mime_guess",
+ "percent-encoding",
+ "pin-project",
+ "scoped-tls",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "tokio",
+ "tokio-util",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
 name = "wasi"
 version = "0.11.1+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6730,6 +7329,16 @@ dependencies = [
  "rustversion",
  "wasm-bindgen-macro",
  "wasm-bindgen-shared",
+]
+
+[[package]]
+name = "wasm-bindgen-futures"
+version = "0.4.75"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "503b14d284f2c8dac03b819967e155ea753f573586193b2b2c95990cb5d69280"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -7202,7 +7811,16 @@ version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
 dependencies = [
- "zstd-safe",
+ "zstd-safe 7.3.0",
+]
+
+[[package]]
+name = "zstd"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf06bd8162af0734b344780deb55b42a2429ae430870d13fcc12f238e880fe6e"
+dependencies = [
+ "zstd-safe 8.0.0",
 ]
 
 [[package]]
@@ -7210,6 +7828,15 @@ name = "zstd-safe"
 version = "7.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64d80649ab6db9d9f6f9c80a40becd948eda4714a0a5ac8c4d157a32231c7882"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae42c0555055784c70058d19ba8e275528e8a99a706684868ace5da4e716a4ab"
 dependencies = [
  "zstd-sys",
 ]

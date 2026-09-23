@@ -1,0 +1,31 @@
+[package]
+name = "rustie-node"
+version = "0.1.0"
+edition = "2024"
+description = "Quickwit node with rustie-leaf registered: searcher + metastore (and optional indexer)"
+license = "Apache-2.0"
+readme = "README.md"
+
+[[bin]]
+name = "rustie-node"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
+itertools = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+rustie-leaf = { path = "../rustie-leaf" }
+
+quickwit-common = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-config = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-metastore = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-serve = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-storage = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+
+tokio = { version = "=1.52.3", features = ["full"] }

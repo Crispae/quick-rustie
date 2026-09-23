@@ -37,11 +37,34 @@ search
 | `rustie-graph-store` | GPH2: block-structured, range-readable, mergeable per-split graph file (ported from RustIE) |
 | `rustie-leaf` | The Quickwit extensions: GPH2 split sidecar + `rustie` query (candidates, warmup, scorer) |
 | `rustie-indexer` | Index Odinson data into MinIO/S3 through Quickwit's indexing service |
-| `rustie-search` | `Searcher` library + `rustie-serve` HTTP API |
+| `rustie-search` | `Searcher` library + `rustie-serve` HTTP API (embedded stack or gateway to `rustie-node`) |
+| `rustie-node` | Quickwit node (`serve_quickwit`) with `rustie_leaf::register()`; owns cluster / gRPC leaf+root |
 
 The Quickwit fork is <https://github.com/Crispae/quickwit-custom> (branch `rustie-ext`); see its
 `docs/rustie-fork.md` for the four hooks and how to rebase them. Every Quickwit crate is
 redirected to it, at a pinned commit, by the `[patch]` section of the root `Cargo.toml`.
+
+## Search topologies
+
+```
+embedded (default rustie-serve)
+  pattern ─rustie-serve─▶ in-process root_search / SearchServiceImpl ─▶ rustie-leaf
+
+single- or multi-node Quickwit
+  pattern ─rustie-serve (gateway)─▶ gRPC root_search ─▶ rustie-node (searcher+metastore)
+                                                              │
+                                                              ├─ local leaf (rustie-leaf)
+                                                              └─ gRPC leaf_search ─▶ peer rustie-node
+```
+
+- **N = 1:** one `rustie-node` with empty `peer_seeds` is a valid cluster.
+- **Metastore:** every `rustie-node` enables the metastore role and opens the shared S3/file URI
+  directly (same as today). Do not use a single-owner metastore proxy for this stack.
+- **Gateway SPOF:** phase 1 dials one `--searcher-endpoint`; leaf fan-out behind that node is
+  resilient. Multi-endpoint root failover is follow-up debt.
+- **Live `report_splits`:** deferred; embedded mode still uses metastore polling
+  (`report_splits_to_cache` / `--refresh-secs`). Clustered nodes get Quickwit’s placer path once
+  an indexer-role node is on the cluster.
 
 ## What replaced what (RustIE → quick-rustie)
 

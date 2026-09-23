@@ -10,7 +10,8 @@ Depends on [quickwit-oss/quickwit](https://github.com/quickwit-oss/quickwit) `v0
 | --- | --- |
 | **`rustie-query`** (`crates/rustie-query`) | RustIE query language — grammar, AST, `QueryParser` |
 | **`rustie-schema`** (`crates/rustie-schema`) | Odinson → sentence docs (tokens + graphs) + Quickwit mapping |
-| **`rustie-search`** (`crates/rustie-search`) | Run RustIE patterns against the index: `Searcher` library + `rustie-serve` HTTP API |
+| **`rustie-search`** (`crates/rustie-search`) | Run RustIE patterns against the index: `Searcher` library + `rustie-serve` HTTP API (embedded or gateway) |
+| **`rustie-node`** (`crates/rustie-node`) | Quickwit node with `rustie-leaf` registered (`serve_quickwit`; searcher + metastore) |
 | **`rustie-leaf`** (`crates/rustie-leaf`) | RustIE inside Quickwit leaf search: GPH2 split component + `rustie` query extension |
 | **`rustie-graph-store`** (`crates/rustie-graph-store`) | GPH2 graph file: blocks, range reads, streaming writer, merge |
 | `quickwit-indexing` | Indexing pipeline |

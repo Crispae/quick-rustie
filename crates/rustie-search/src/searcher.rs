@@ -3,6 +3,13 @@
 //! The pattern travels as a `rustie` extension query and is matched exactly inside each split
 //! (see `rustie-leaf`): only matching sentences are counted, ranked and fetched. This process
 //! then renders the matched spans of the returned page from the stored sentences.
+//!
+//! Two backends:
+//! - **Embedded** (default): in-process `SearchServiceImpl` + one-node pool (laptop / MinIO smoke).
+//! - **Gateway**: gRPC `SearchServiceClient::root_search` to a remote `rustie-node` (same RPC the
+//!   embedded path uses locally). Keeps a direct `open_metastore` client for [`Searcher::summary`]
+//!   only. The dialed searcher endpoint is a known SPOF for root entry (leaf fan-out behind it
+//!   is resilient).
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroU32;
@@ -18,10 +25,10 @@ use quickwit_metastore::{
 use quickwit_proto::metastore::{
     IndexMetadataRequest, ListSplitsRequest, MetastoreService, MetastoreServiceClient,
 };
-use quickwit_proto::search::{CountHits, PartialHit, ReportSplit, SearchRequest};
+use quickwit_proto::search::{CountHits, PartialHit, ReportSplit, SearchRequest, SearchResponse};
 use quickwit_search::{
     ClusterClient, SearchJobPlacer, SearchServiceClient, SearchServiceImpl, SearcherContext,
-    SearcherPool, root_search,
+    SearcherPool, create_search_client_from_grpc_addr, root_search,
 };
 use quickwit_storage::{SearchSplitCache, StorageResolver};
 use rustie_compiler::{CompiledQuery, QueryCompiler};
@@ -44,24 +51,33 @@ pub struct SearcherOptions {
     /// Wall-clock budget per query.
     pub timeout: Duration,
 
+    /// When set, search goes to this remote Quickwit searcher gRPC addr via
+    /// [`SearchServiceClient::root_search`] (gateway mode). When `None`, use the embedded
+    /// in-process stack. Phase 1: a single endpoint (root-entry SPOF; leaf fan-out is separate).
+    pub searcher_endpoint: Option<SocketAddr>,
+    /// Max gRPC message size for the gateway client. Default 20 MiB (Quickwit `GrpcConfig`).
+    pub grpc_max_message_size: ByteSize,
+
     /// Byte budget (MB) of Quickwit's in-memory fast-field cache. Default 1024 (matches
-    /// `SearcherConfig::default()`).
+    /// `SearcherConfig::default()`). Ignored in gateway mode.
     pub fast_field_cache_mb: u64,
     /// Byte budget (MB) of the split-footer (file-bundle metadata + hotcache) cache. Default 500.
+    /// Ignored in gateway mode.
     pub split_footer_cache_mb: u64,
     /// Byte budget (MB) of the per-split partial-result cache (memoizes whole leaf responses,
-    /// e.g. across identical pages of the same query). Default 64.
+    /// e.g. across identical pages of the same query). Default 64. Ignored in gateway mode.
     pub partial_request_cache_mb: u64,
     /// Byte budget (MB) of the predicate cache (see `rustie_leaf::cache_wrapped_query_ast`).
-    /// Default 256.
+    /// Default 256. Ignored in gateway mode (lives on the remote node).
     pub predicate_cache_mb: u64,
 
     /// Root directory for the on-disk split cache (whole downloaded split files kept between
     /// queries and across restarts; not cleaned up automatically). Required (must be `Some`)
-    /// when `split_cache_limits` is `Some`; ignored otherwise.
+    /// when `split_cache_limits` is `Some`; ignored otherwise. Embedded mode only.
     pub split_cache_dir: Option<PathBuf>,
     /// Limits for the on-disk split cache. `None` (default) disables it entirely: every query
     /// re-fetches split data from object storage, subject only to the in-memory caches above.
+    /// Embedded mode only.
     pub split_cache_limits: Option<SplitCacheLimits>,
 }
 
@@ -73,6 +89,8 @@ impl SearcherOptions {
             metastore_uri: indexer.metastore_uri,
             max_limit: 1_000,
             timeout: Duration::from_secs(30),
+            searcher_endpoint: None,
+            grpc_max_message_size: ByteSize::mib(20),
             fast_field_cache_mb: 1024,
             split_footer_cache_mb: 500,
             partial_request_cache_mb: 64,
@@ -84,6 +102,7 @@ impl SearcherOptions {
 
     /// Enables the on-disk split cache: whole `.split` files are kept under `dir` between
     /// queries and across restarts, up to `max_mb` megabytes and `max_splits` splits.
+    /// Only applies to embedded mode.
     pub fn with_split_cache(mut self, dir: PathBuf, max_mb: u64, max_splits: u32) -> Result<Self> {
         self.split_cache_dir = Some(dir);
         self.split_cache_limits = Some(SplitCacheLimits {
@@ -107,21 +126,29 @@ pub struct Searcher {
     options: SearcherOptions,
     minio: MinioConfig,
     compiler: QueryCompiler,
-    /// Quickwit's searcher caches (split footers, fast fields, partial results). Built once
-    /// and kept for the life of the process, including across metastore refreshes: this is
-    /// the counterpart of RustIE's hotcache. (`single_node_search` builds a fresh one per
-    /// call, so every query would start cold.)
-    context: Arc<SearcherContext>,
-    stack: RwLock<Stack>,
+    backend: SearchBackend,
 }
 
-/// Everything derived from one metastore view.
-struct Stack {
+enum SearchBackend {
+    /// In-process leaf/root (laptop default).
+    Embedded {
+        context: Arc<SearcherContext>,
+        stack: RwLock<EmbeddedStack>,
+    },
+    /// Remote `rustie-node` via gRPC `root_search`; local metastore for `summary` only.
+    Gateway {
+        client: Box<SearchServiceClient>,
+        metastore: RwLock<MetastoreServiceClient>,
+    },
+}
+
+/// Everything derived from one metastore view (embedded mode).
+struct EmbeddedStack {
     metastore: MetastoreServiceClient,
     cluster_client: ClusterClient,
 }
 
-impl Stack {
+impl EmbeddedStack {
     fn new(
         context: &Arc<SearcherContext>,
         metastore: MetastoreServiceClient,
@@ -158,6 +185,9 @@ impl Stack {
 /// Best-effort: an index that doesn't exist yet, or a transient metastore error, only means the
 /// split cache stays empty until the next successful call — this must never fail `connect` or
 /// `refresh`, matching how the rest of this searcher tolerates the index not existing yet.
+///
+/// Kept for **embedded** mode. Clustered `rustie-node` searchers get live `report_splits` from
+/// an indexer-role node (phase 2); this stand-in is not used in gateway mode.
 async fn report_splits_to_cache(
     metastore: &MetastoreServiceClient,
     index_id: &str,
@@ -204,10 +234,29 @@ impl Searcher {
                 "split_cache_limits requires split_cache_dir".into(),
             ));
         }
-        // Splits are searched in this process: the leaf must know the `rustie` query.
+
+        // Always open metastore: embedded needs it for search; gateway needs it for summary().
+        let (storage_resolver, metastore) =
+            open_metastore(&minio, &options.metastore_uri).await?;
+
+        if let Some(endpoint) = options.searcher_endpoint {
+            // Gateway: no local SearchServiceImpl / SearcherContext / ClusterClient.
+            // Leaf extensions run on the remote rustie-node (which called register()).
+            let client =
+                create_search_client_from_grpc_addr(endpoint, options.grpc_max_message_size);
+            return Ok(Self {
+                options,
+                minio,
+                compiler: QueryCompiler::new(),
+                backend: SearchBackend::Gateway {
+                    client: Box::new(client),
+                    metastore: RwLock::new(metastore),
+                },
+            });
+        }
+
+        // Embedded: splits are searched in this process — the leaf must know the `rustie` query.
         rustie_leaf::register();
-        // Resolved before the context: the on-disk split cache needs it too.
-        let (storage_resolver, metastore) = open_metastore(&minio, &options.metastore_uri).await?;
 
         let split_cache_opt = match (&options.split_cache_dir, &options.split_cache_limits) {
             (Some(dir), Some(limits)) => Some(
@@ -239,8 +288,10 @@ impl Searcher {
             options,
             minio,
             compiler: QueryCompiler::new(),
-            stack: RwLock::new(Stack::new(&context, metastore, storage_resolver)),
-            context,
+            backend: SearchBackend::Embedded {
+                stack: RwLock::new(EmbeddedStack::new(&context, metastore, storage_resolver)),
+                context,
+            },
         })
     }
 
@@ -248,20 +299,38 @@ impl Searcher {
         &self.options
     }
 
+    /// Whether this searcher dials a remote `rustie-node` for search.
+    pub fn is_gateway(&self) -> bool {
+        matches!(self.backend, SearchBackend::Gateway { .. })
+    }
+
     /// Re-open the metastore so splits published since the last (re)load become visible.
-    /// The file-backed metastore does not poll on its own. Caches are kept.
+    /// The file-backed metastore does not poll on its own. Embedded caches are kept.
+    /// In gateway mode, only the local summary metastore is refreshed (search hits the remote).
     pub async fn refresh(&self) -> Result<()> {
-        let (storage_resolver, metastore) =
-            open_metastore(&self.minio, &self.options.metastore_uri).await?;
-        if let Some(split_cache) = &self.context.split_cache_opt {
-            report_splits_to_cache(&metastore, &self.options.index_id, split_cache).await;
+        match &self.backend {
+            SearchBackend::Embedded { context, stack } => {
+                let (storage_resolver, metastore) =
+                    open_metastore(&self.minio, &self.options.metastore_uri).await?;
+                if let Some(split_cache) = &context.split_cache_opt {
+                    report_splits_to_cache(&metastore, &self.options.index_id, split_cache).await;
+                }
+                *stack.write().await = EmbeddedStack::new(context, metastore, storage_resolver);
+            }
+            SearchBackend::Gateway { metastore, .. } => {
+                let (_storage_resolver, fresh) =
+                    open_metastore(&self.minio, &self.options.metastore_uri).await?;
+                *metastore.write().await = fresh;
+            }
         }
-        *self.stack.write().await = Stack::new(&self.context, metastore, storage_resolver);
         Ok(())
     }
 
     pub async fn summary(&self) -> Result<IndexSummary> {
-        let metastore = self.stack.read().await.metastore.clone();
+        let metastore = match &self.backend {
+            SearchBackend::Embedded { stack, .. } => stack.read().await.metastore.clone(),
+            SearchBackend::Gateway { metastore, .. } => metastore.read().await.clone(),
+        };
         Ok(index_summary(&metastore, &self.options.index_id).await?)
     }
 
@@ -303,10 +372,6 @@ impl Searcher {
         };
         let query_ast = rustie_leaf::cache_wrapped_query_ast(&query.query);
 
-        let (metastore, cluster_client) = {
-            let stack = self.stack.read().await;
-            (stack.metastore.clone(), stack.cluster_client.clone())
-        };
         let request = SearchRequest {
             index_id_patterns: vec![self.options.index_id.clone()],
             query_ast: serde_json::to_string(&query_ast)
@@ -323,9 +388,7 @@ impl Searcher {
             ..Default::default()
         };
         let backend_started = Instant::now();
-        let response = root_search(&self.context, request, &metastore, &cluster_client)
-            .await
-            .map_err(|err| SearchError::Backend(err.to_string()))?;
+        let response = self.root_search(request).await?;
         let backend_us = backend_started.elapsed().as_micros() as u64;
         if !response.errors.is_empty() || !response.failed_splits.is_empty() {
             return Err(SearchError::Backend(format!(
@@ -372,5 +435,45 @@ impl Searcher {
                 render_us,
             },
         })
+    }
+
+    async fn root_search(&self, request: SearchRequest) -> Result<SearchResponse> {
+        match &self.backend {
+            SearchBackend::Embedded { context, stack } => {
+                let (metastore, cluster_client) = {
+                    let stack = stack.read().await;
+                    (stack.metastore.clone(), stack.cluster_client.clone())
+                };
+                root_search(context, request, &metastore, &cluster_client)
+                    .await
+                    .map_err(|err| SearchError::Backend(err.to_string()))
+            }
+            SearchBackend::Gateway { client, .. } => {
+                let mut client = client.as_ref().clone();
+                client
+                    .root_search(request)
+                    .await
+                    .map_err(|err| SearchError::Backend(err.to_string()))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn for_bucket_defaults_to_embedded() {
+        let opts = SearcherOptions::for_bucket("rustie-dev");
+        assert!(opts.searcher_endpoint.is_none());
+        assert_eq!(opts.grpc_max_message_size, ByteSize::mib(20));
+    }
+
+    #[test]
+    fn gateway_endpoint_is_opt_in() {
+        let mut opts = SearcherOptions::for_bucket("rustie-dev");
+        opts.searcher_endpoint = Some("127.0.0.1:7281".parse().unwrap());
+        assert!(opts.searcher_endpoint.is_some());
     }
 }

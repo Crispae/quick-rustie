@@ -1,0 +1,39 @@
+# Single-node (or first peer) rustie-node config for local MinIO.
+# `enabled_services` below is authoritative unless you pass `--service …` on the CLI.
+# Prefer searcher + metastore so every node opens this metastore URI directly.
+#
+#   cargo run -p rustie-node -- --config configs/rustie-node.yaml
+#
+version: 0.8
+
+cluster_id: rustie-cluster
+node_id: rustie-node-1
+# Empty peer_seeds = valid single-node cluster. For N>=2, list peers' gossip addresses.
+peer_seeds: []
+
+listen_address: 127.0.0.1
+advertise_address: 127.0.0.1
+# REST (Quickwit API) / gRPC (search leaf+root) / gossip
+# rustie-serve --searcher-endpoint should target the gRPC port.
+rest:
+  listen_port: 7280
+grpc_listen_port: 7281
+gossip_listen_port: 7282
+
+data_dir: /tmp/rustie-node-data
+
+# Same layout as rustie-index / rustie-serve (bucket rustie-dev, prefix quick-rustie).
+metastore_uri: s3://rustie-dev/quick-rustie/metastore
+default_index_root_uri: s3://rustie-dev/quick-rustie/indexes
+
+storage:
+  s3:
+    flavor: minio
+    endpoint: http://127.0.0.1:9010
+    access_key_id: minioadmin
+    secret_access_key: minioadmin
+    region: us-east-1
+
+enabled_services:
+  - searcher
+  - metastore

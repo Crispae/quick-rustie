@@ -79,6 +79,13 @@ struct Args {
     /// `--split-cache-dir` is set.
     #[arg(long, default_value_t = 10_000)]
     split_cache_max_splits: u32,
+
+    /// Remote `rustie-node` gRPC address for gateway mode (e.g. `127.0.0.1:7281`).
+    /// When unset, this process embeds the search stack (laptop default).
+    /// Known debt: a single endpoint is a SPOF for root entry; leaf fan-out behind that
+    /// node is resilient.
+    #[arg(long, env = "RUSTIE_SEARCHER_ENDPOINT")]
+    searcher_endpoint: Option<SocketAddr>,
 }
 
 fn main() -> ExitCode {
@@ -136,8 +143,17 @@ async fn run(args: Args) -> anyhow::Result<()> {
         options =
             options.with_split_cache(dir, args.split_cache_max_mb, args.split_cache_max_splits)?;
     }
+    options.searcher_endpoint = args.searcher_endpoint;
 
     let searcher = Arc::new(Searcher::connect(minio, options).await?);
+    if searcher.is_gateway() {
+        info!(
+            endpoint = %searcher.options().searcher_endpoint.unwrap(),
+            "gateway mode: root_search over gRPC"
+        );
+    } else {
+        info!("embedded mode: in-process search stack");
+    }
     match searcher.summary().await {
         Ok(s) => info!(
             splits = s.num_published_splits,
