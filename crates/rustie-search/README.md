@@ -58,13 +58,18 @@ Flags: `--bind` (default `127.0.0.1:8080`), `--index-id`, `--metastore-uri`, `--
 Every `rustie-node` enables **metastore + searcher** and opens the shared file/S3 metastore URI directly (not upstream’s single-owner metastore proxy). Gateway still calls `open_metastore` itself for `GET /v1/index` (`summary()`); search goes over gRPC `SearchService::root_search` only.
 
 ```bash
-# Terminal 1 — Quickwit searcher (registers rustie-leaf)
-cargo run --release -p rustie-node -- --config configs/rustie-node.yaml
+# Terminal 1–2 — Quickwit searchers (see configs/rustie-node-1.yaml + rustie-node-2.yaml)
+cargo run --release -p rustie-node -- --config configs/rustie-node-1.yaml
+cargo run --release -p rustie-node -- --config configs/rustie-node-2.yaml
 
-# Terminal 2 — Odinson HTTP API as gateway
+# Terminal 3 — Odinson HTTP API as gateway (index id must match the metastore)
 cargo run --release -p rustie-search --bin rustie-serve -- \
+  --index-id pubmed-slots \
+  --metastore-uri 's3://rustie-dev/metastore' \
   --searcher-endpoint 127.0.0.1:7281
 ```
+
+End-to-end multi-node steps and design diagram: root [`README.md`](../../README.md).
 
 
 ## Library

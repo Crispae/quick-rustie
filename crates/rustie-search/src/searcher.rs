@@ -235,13 +235,16 @@ impl Searcher {
             ));
         }
 
+        // register() before metastore use: summary() deserializes mappings that name
+        // rustie_tokens / rustie_edges. Leaf matching still runs on rustie-node in gateway mode.
+        rustie_leaf::register();
+
         // Always open metastore: embedded needs it for search; gateway needs it for summary().
         let (storage_resolver, metastore) =
             open_metastore(&minio, &options.metastore_uri).await?;
 
         if let Some(endpoint) = options.searcher_endpoint {
             // Gateway: no local SearchServiceImpl / SearcherContext / ClusterClient.
-            // Leaf extensions run on the remote rustie-node (which called register()).
             let client =
                 create_search_client_from_grpc_addr(endpoint, options.grpc_max_message_size);
             return Ok(Self {
@@ -254,9 +257,6 @@ impl Searcher {
                 },
             });
         }
-
-        // Embedded: splits are searched in this process — the leaf must know the `rustie` query.
-        rustie_leaf::register();
 
         let split_cache_opt = match (&options.split_cache_dir, &options.split_cache_limits) {
             (Some(dir), Some(limits)) => Some(

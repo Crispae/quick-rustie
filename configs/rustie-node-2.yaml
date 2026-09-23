@@ -1,0 +1,31 @@
+# rustie-node 2 — pubmed-slots on local MinIO
+version: 0.8
+
+cluster_id: rustie-cluster
+node_id: rustie-node-2
+peer_seeds:
+  - 127.0.0.1:7282
+
+listen_address: 127.0.0.1
+advertise_address: 127.0.0.1
+rest:
+  listen_port: 7380
+grpc_listen_port: 7381
+gossip_listen_port: 7382
+
+data_dir: /tmp/rustie-node-2-data
+
+metastore_uri: s3://rustie-dev/metastore
+default_index_root_uri: s3://rustie-dev/indexes
+
+storage:
+  s3:
+    flavor: minio
+    endpoint: http://127.0.0.1:9010
+    access_key_id: minioadmin
+    secret_access_key: minioadmin
+    region: us-east-1
+
+enabled_services:
+  - searcher
+  - metastore

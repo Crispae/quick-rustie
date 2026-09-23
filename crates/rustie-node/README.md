@@ -1,48 +1,82 @@
 # rustie-node
 
 Quickwit node process with [`rustie_leaf::register()`](../rustie-leaf) installed before
-`serve_quickwit`. This is the process that owns **cluster membership, gRPC leaf/root search,
-and optional indexing** — not `rustie-serve` (which is the Odinson HTTP gateway / embedded
-laptop searcher).
+`serve_quickwit`. Owns **cluster membership, gRPC leaf/root search, and optional indexing** —
+not the Odinson HTTP API (`rustie-serve` is the gateway / embedded laptop searcher).
 
-## Roles
+## Design
 
-Services come from the **node config** `enabled_services` (example: **`searcher` + `metastore`**).
-Pass `--service` only to override that list; omitting the flag lets the YAML win.
+```
+  rustie-serve --searcher-endpoint host:grpc
+       │  gRPC root_search
+       ▼
+  rustie-node (this binary)
+       ├─ SearchJobPlacer assigns splits (rendezvous hash)
+       ├─ local leaf_search  → rustie-leaf (exact match in split)
+       └─ gRPC leaf_search   → peer rustie-nodes
+```
 
-Every node should open the shared file/S3 metastore URI **directly**. Do not adopt upstream’s
-single-owner metastore-role topology for this stack.
+- Matching is Quickwit leaf search + the `rustie` extension; this binary only hosts that stack.
+- **Every node** should enable `searcher` + `metastore` and open the **same** shared file/S3
+  metastore URI directly (no single-owner metastore proxy).
+- Indexing remains batch `rustie-index` for now; adding `indexer` to `enabled_services` is for a
+  later live-`report_splits` path.
+
+## Roles / config
+
+Services come from the node YAML `enabled_services`. Pass `--service` only to **override**;
+omitting the flag lets the config (and `QW_ENABLED_SERVICES`) win.
 
 | Topology | How |
 | --- | --- |
-| Single node | `peer_seeds: []` in the node config; one `rustie-node` |
-| Multi node | Shared `cluster_id`, peer gossip seeds; each node unique `node_id` / advertise addrs |
-| Indexer (later) | Add `indexer` under `enabled_services` in the YAML (or `--service indexer --service searcher --service metastore`) |
+| Single node | `peer_seeds: []`; one process |
+| Multi node | Shared `cluster_id`; unique `node_id`, ports, `data_dir`; `peer_seeds` = peers’ **gossip** addresses |
+| Indexer (later) | Add `indexer` under `enabled_services` (keep `metastore`) |
 
-## Run
+## Run (single node)
 
 ```bash
-# create data dir path from the config if needed (binary also creates it)
 mkdir -p /tmp/rustie-node-data
-
 cargo run --release -p rustie-node -- --config configs/rustie-node.yaml
-
-# override services
-cargo run --release -p rustie-node -- \
-  --config configs/rustie-node.yaml \
-  --service searcher --service metastore
 ```
 
-Point `rustie-serve` at the node’s **gRPC** port (not REST):
+Gateway:
 
 ```bash
 cargo run --release -p rustie-search --bin rustie-serve -- \
+  --index-id pubmed-slots \
+  --metastore-uri 's3://rustie-dev/metastore' \
   --searcher-endpoint 127.0.0.1:7281
 ```
 
-(Default gRPC listen in `configs/rustie-node.yaml` is `7281`; adjust to match.)
+## Run (two nodes on localhost)
 
-## Config
+Example configs already filled for MinIO `rustie-dev` + index `pubmed-slots`:
 
-See [`configs/rustie-node.yaml`](../../configs/rustie-node.yaml). Set MinIO/`storage.s3` and
-`metastore_uri` / `default_index_root_uri` to the same bucket layout `rustie-index` uses.
+| | Node 1 | Node 2 |
+| --- | --- | --- |
+| Config | [`configs/rustie-node-1.yaml`](../../configs/rustie-node-1.yaml) | [`configs/rustie-node-2.yaml`](../../configs/rustie-node-2.yaml) |
+| REST / gRPC / gossip | 7280 / **7281** / 7282 | 7380 / **7381** / 7382 |
+| `peer_seeds` | `127.0.0.1:7382` | `127.0.0.1:7282` |
+
+```bash
+mkdir -p /tmp/rustie-node-1-data /tmp/rustie-node-2-data
+
+cargo run --release -p rustie-node -- --config configs/rustie-node-1.yaml
+cargo run --release -p rustie-node -- --config configs/rustie-node-2.yaml
+
+cargo run --release -p rustie-search --bin rustie-serve -- \
+  --index-id pubmed-slots \
+  --metastore-uri 's3://rustie-dev/metastore' \
+  --searcher-endpoint 127.0.0.1:7281 \
+  --bind 127.0.0.1:8080
+```
+
+Point `--searcher-endpoint` at a node’s **gRPC** port (not REST). Leaf work is spread across
+both nodes by Quickwit; the gateway only needs one root.
+
+## Config checklist
+
+- `metastore_uri` / `default_index_root_uri` / `storage.s3` must match `rustie-index`.
+- `data_dir` must exist (the binary creates it when it can parse `data_dir` from YAML).
+- Change `cluster_id` only if you intend a separate cluster; peers must share it.
