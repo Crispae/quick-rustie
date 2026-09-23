@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/rustie-query", "crates/rustie-schema", "crates/rustie-compiler", "crates/rustie-indexer", "crates/rustie-search", "crates/rustie-graph-store", "crates/rustie-leaf"]
+members = [".", "crates/rustie-query", "crates/rustie-schema", "crates/rustie-compiler", "crates/rustie-indexer", "crates/rustie-search", "crates/rustie-graph-store", "crates/rustie-leaf", "crates/rustie-node"]
 
 [package]
 name = "quick_rustie"
@@ -47,26 +47,32 @@ path = "examples/minio_ping.rs"
 # needs. Every quickwit crate in the dependency graph must be patched, otherwise cargo would mix
 # fork and upstream types. See docs/rustie-fork.md.
 [patch."https://github.com/quickwit-oss/quickwit.git"]
-quickwit-actors = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-aws = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-cluster = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-codegen = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-common = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-config = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-datetime = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-directories = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-doc-mapper = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-dst = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-index-management = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-indexing = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-ingest = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-macros = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-metastore = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-metrics = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-opentelemetry = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-parquet-engine = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-proto = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-query = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-search = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-storage = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
-quickwit-transport = { git = "https://github.com/Crispae/quickwit-custom", rev = "b76ff3b129c1c591620939767d2771f613b232ea" }
+quickwit-actors = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-aws = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-cluster = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-codegen = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-common = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-compaction = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-config = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-control-plane = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-datetime = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-directories = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-doc-mapper = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-dst = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-index-management = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-indexing = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-ingest = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-jaeger = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-janitor = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-macros = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-metastore = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-metrics = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-opentelemetry = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-parquet-engine = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-proto = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-query = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-search = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-serve = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-storage = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-telemetry-exporters = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }
+quickwit-transport = { git = "https://github.com/Crispae/quickwit-custom", rev = "4488aed884b7e99eec7b362fe07523a88e41fb19" }

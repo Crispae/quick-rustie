@@ -9,7 +9,10 @@ use std::collections::BTreeMap;
 
 /// Flatten a parsed Odinson [`Document`] into sentence docs.
 ///
-/// - Token fields must have length `numTokens` and must not contain `|`.
+/// - Token fields must have length `numTokens`. `|`, `,` and `\` in a token are escaped by
+///   [`crate::encoding::encode_tokens`] and recovered by the `rustie_tokens` tokenizer, so they
+///   no longer need to be rejected here (unlike Quickwit's stock regex tokenizer, which never
+///   unescaped them).
 /// - Graph fields are validated and attached; primary `dependencies` also
 ///   populate `incoming_edges` / `outgoing_edges` for postings.
 pub fn flatten_document(doc: &Document) -> Result<Vec<SentenceDoc>> {
@@ -39,15 +42,6 @@ pub fn flatten_document(doc: &Document) -> Result<Vec<SentenceDoc>> {
                             n
                         )));
                     }
-                    for (i, tok) in field_tokens.iter().enumerate() {
-                        if tok.contains('|') {
-                            return Err(SchemaError::validate(format!(
-                                "Document '{}' sentence {}: field '{}' token[{}] contains '|'; \
-                                 unsupported by Quickwit pipe_tokens tokenizer",
-                                doc.id, sentence_idx, name, i
-                            )));
-                        }
-                    }
                     tokens.insert(name.clone(), field_tokens.clone());
                 }
                 Field::GraphField { name, edges, roots } => {
@@ -63,14 +57,9 @@ pub fn flatten_document(doc: &Document) -> Result<Vec<SentenceDoc>> {
                     if let Err(msg) = graph.validate(n, &doc.id, sentence_idx) {
                         return Err(SchemaError::validate(msg));
                     }
-                    for e in &graph.edges {
-                        if e.rel.contains('|') {
-                            return Err(SchemaError::validate(format!(
-                                "Document '{}' sentence {}: relation '{}' contains '|'",
-                                doc.id, sentence_idx, e.rel
-                            )));
-                        }
-                    }
+                    // A relation label containing `|` or `,` (enhanced UD puts lemmas into
+                    // labels, e.g. `obl:in`) is escaped by `encode_edges` and recovered by the
+                    // `rustie_edges` tokenizer, so it no longer needs to be rejected here.
                     graphs.insert(name.clone(), graph);
                 }
             }
@@ -83,11 +72,14 @@ pub fn flatten_document(doc: &Document) -> Result<Vec<SentenceDoc>> {
             )));
         }
 
+        // Same primary-graph choice GPH2 is built from (`dependencies`, falling back to
+        // `dependencies_basic`; see `rustie-leaf`'s `GraphSidecar`), so the edge postings cover
+        // every label a graph traversal can actually follow.
         let (outgoing_edges, incoming_edges) = if let Some(g) = graphs
             .get(DEFAULT_GRAPH_FIELD)
             .or_else(|| graphs.get(DEFAULT_BASIC_GRAPH_FIELD))
         {
-            g.labels_by_direction(n)
+            g.edge_label_slots(n)
         } else {
             (Vec::new(), Vec::new())
         };
@@ -167,13 +159,17 @@ mod tests {
         assert_eq!(docs[0].outgoing_edges[1], vec!["det".to_string()]);
         assert_eq!(docs[0].incoming_edges[0], vec!["det".to_string()]);
         assert_eq!(docs[0].outgoing_edges[2], vec!["nsubj".to_string()]);
+        // Token 2 ("sat") is the root: `edge_label_slots` adds "root" to its incoming labels.
+        assert_eq!(docs[0].incoming_edges[2], vec!["root".to_string()]);
+
+        assert!(docs[0].validate().is_ok());
 
         let json = docs[0].to_quickwit_json();
         assert_eq!(json["word"], "The|cat|sat");
         assert_eq!(json["pos"], "DT|NN|VBD");
         assert!(json.get("dependencies").is_some());
-        assert!(json.get("incoming_edges").is_some());
-        assert!(json.get("outgoing_edges").is_some());
+        assert_eq!(json["incoming_edges"], "det|nsubj|root");
+        assert_eq!(json["outgoing_edges"], "|det|nsubj");
 
         let adj = g.outgoing_adjacency(3);
         assert_eq!(adj[2][0].0, 1);
@@ -221,18 +217,56 @@ mod tests {
     }
 
     #[test]
-    fn rejects_pipe_in_token() {
-        let bad = r#"{
+    fn pipe_and_comma_in_token_round_trip() {
+        // The stock Quickwit regex tokenizer could never unescape these, so they used to be
+        // rejected outright; `rustie_tokens` (see `encoding::slot_terms`) recovers them exactly.
+        let doc = r#"{
           "id": "x",
           "sentences": [{
-            "numTokens": 1,
+            "numTokens": 2,
             "fields": [{
               "name": "word",
               "$type": "ai.lum.odinson.TokensField",
-              "tokens": ["a|b"]
+              "tokens": ["a|b", "1,000"]
             }]
           }]
         }"#;
-        assert!(flatten_odinson_json(bad).is_err());
+        let docs = flatten_odinson_json(doc).unwrap();
+        assert!(docs[0].validate().is_ok());
+        let json = docs[0].to_quickwit_json();
+        let encoded = json["word"].as_str().unwrap();
+        assert_eq!(
+            crate::encoding::decode_tokens(encoded),
+            vec!["a|b".to_string(), "1,000".to_string()]
+        );
+    }
+
+    #[test]
+    fn pipe_in_edge_relation_round_trips() {
+        let doc = r#"{
+          "id": "x",
+          "sentences": [{
+            "numTokens": 2,
+            "fields": [
+              {
+                "name": "word",
+                "$type": "ai.lum.odinson.TokensField",
+                "tokens": ["a", "b"]
+              },
+              {
+                "name": "dependencies",
+                "$type": "ai.lum.odinson.GraphField",
+                "edges": [[1, 0, "nsubj|weird,rel"]],
+                "roots": [1]
+              }
+            ]
+          }]
+        }"#;
+        let docs = flatten_odinson_json(doc).unwrap();
+        assert!(docs[0].validate().is_ok());
+        assert_eq!(
+            docs[0].outgoing_edges[1],
+            vec!["nsubj|weird,rel".to_string()]
+        );
     }
 }

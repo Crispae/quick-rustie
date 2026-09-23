@@ -1,0 +1,49 @@
+# Single-node (or first peer) rustie-node config for local MinIO + Postgres metastore.
+# `enabled_services` below is authoritative unless you pass `--service …` on the CLI.
+# Prefer searcher + metastore so every node opens this metastore URI directly.
+#
+#   docker run -d --name rustie-postgres -p 5433:5432 \
+#     -e POSTGRES_USER=rustie -e POSTGRES_PASSWORD=rustie -e POSTGRES_DB=rustie postgres:16
+#   cargo run -p rustie-node -- --config configs/rustie-node.yaml
+#
+version: 0.8
+
+cluster_id: rustie-cluster
+node_id: rustie-node-1
+# Empty peer_seeds = valid single-node cluster. For N>=2, list peers' gossip addresses.
+peer_seeds: []
+
+listen_address: 127.0.0.1
+advertise_address: 127.0.0.1
+# REST (Quickwit API) / gRPC (search leaf+root) / gossip
+# rustie-serve --searcher-endpoint should target the gRPC port.
+rest:
+  listen_port: 7280
+grpc_listen_port: 7281
+gossip_listen_port: 7282
+
+data_dir: /tmp/rustie-node-data
+
+# Postgres metastore (Quickwit runs schema migrations on connect).
+# Split files stay on MinIO under default_index_root_uri.
+metastore_uri: postgres://rustie:rustie@127.0.0.1:5433/rustie
+default_index_root_uri: s3://rustie-dev/quick-rustie/indexes
+
+storage:
+  s3:
+    flavor: minio
+    endpoint: http://127.0.0.1:9010
+    access_key_id: minioadmin
+    secret_access_key: minioadmin
+    region: us-east-1
+
+# Without split_cache, live ReportSplitsRequest from the indexer is a no-op.
+searcher:
+  split_cache:
+    max_num_bytes: 10GB
+    max_num_splits: 10000
+    num_concurrent_downloads: 1
+
+enabled_services:
+  - searcher
+  - metastore

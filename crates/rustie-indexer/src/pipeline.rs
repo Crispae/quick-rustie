@@ -4,19 +4,31 @@
 //! This follows `quickwit index ingest --local` (`quickwit-cli/src/tool.rs`): a private
 //! single-node cluster (in-memory gossip transport, no sockets), one indexing service
 //! actor, and one indexing + merge pipeline pair per source run.
+//!
+//! With `--cluster-config`, the indexer joins the real rustie-cluster as a gossip-only
+//! member and subscribes [`SearchJobPlacer`] to the uploader's [`EventBroker`], so
+//! `ReportSplitsRequest`s reach searchers' on-disk split caches.
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
+use bytesize::ByteSize;
+use futures::StreamExt;
 use quickwit_actors::{ActorHandle, Mailbox, Universe};
-use quickwit_cluster::{Cluster, ClusterMember, FailureDetectorConfig, GenerationId};
-use quickwit_common::pubsub::EventBroker;
+use quickwit_cluster::{
+    Cluster, ClusterChange, ClusterMember, FailureDetectorConfig, GenerationId,
+    start_cluster_service,
+};
+use quickwit_common::pubsub::{EventBroker, EventSubscriptionHandle};
 use quickwit_common::runtimes::{RuntimesConfig, initialize_runtimes};
-use quickwit_config::{IndexerConfig, SourceConfig};
+use quickwit_common::tower::Change;
+use quickwit_common::uri::Uri;
+use quickwit_config::{ConfigFormat, IndexerConfig, NodeConfig, SourceConfig};
 use quickwit_indexing::actors::{IndexingService, MergeSchedulerService};
 use quickwit_indexing::models::{
     DetachIndexingPipeline, DetachMergePipeline, IndexingStatistics, SpawnPipeline,
@@ -26,8 +38,10 @@ use quickwit_ingest::IngesterPool;
 use quickwit_proto::indexing::CpuCapacity;
 use quickwit_proto::ingest::ingester::IngesterStatus;
 use quickwit_proto::metastore::MetastoreServiceClient;
+use quickwit_proto::search::ReportSplitsRequest;
 use quickwit_proto::types::{NodeId, PipelineUid};
-use quickwit_storage::StorageResolver;
+use quickwit_search::{SearchJobPlacer, SearcherPool, create_search_client_from_grpc_addr};
+use quickwit_storage::{StorageResolver, load_file};
 use tracing::{info, warn};
 
 use crate::error::{IndexerError, Result};
@@ -48,6 +62,12 @@ pub(crate) struct PipelineRuntime {
     universe: Universe,
     service: Mailbox<IndexingService>,
     service_handle: ActorHandle<IndexingService>,
+    /// Kept alive so the process stays in the gossip mesh and the placer subscription
+    /// remains registered (dropping the handle unsubscribes).
+    _cluster: Cluster,
+    _event_broker: EventBroker,
+    _report_splits_subscription_handle: Option<EventSubscriptionHandle>,
+    _search_job_placer: Option<SearchJobPlacer>,
 }
 
 impl PipelineRuntime {
@@ -56,11 +76,21 @@ impl PipelineRuntime {
         data_dir: &Path,
         metastore: MetastoreServiceClient,
         storage_resolver: StorageResolver,
+        cluster_config: Option<&Path>,
     ) -> anyhow::Result<Self> {
         let runtimes_config = RuntimesConfig::default();
         initialize_runtimes(runtimes_config).context("failed to start actor runtimes")?;
 
-        let cluster = create_local_cluster(node_id.clone()).await?;
+        let (cluster, event_broker, report_handle, placer, service_node_id) =
+            if let Some(config_path) = cluster_config {
+                let (cluster, event_broker, handle, placer, node_id) =
+                    start_cluster_mode(config_path).await?;
+                (cluster, event_broker, Some(handle), Some(placer), node_id)
+            } else {
+                let cluster = create_local_cluster(node_id.clone()).await?;
+                (cluster, EventBroker::default(), None, None, node_id)
+            };
+
         let indexer_config = IndexerConfig::default();
         let split_cache =
             Arc::new(IndexingSplitCache::from_config(&indexer_config, data_dir).await?);
@@ -68,17 +98,17 @@ impl PipelineRuntime {
         let universe = Universe::new();
         let merge_scheduler: Mailbox<MergeSchedulerService> = universe.get_or_spawn_one();
         let service = IndexingService::new(
-            node_id,
+            service_node_id,
             data_dir.to_path_buf(),
             indexer_config,
             runtimes_config.num_threads_blocking,
-            cluster,
+            cluster.clone(),
             metastore,
             None, // no ingest API queue: documents come from the Vec source only
             Some(merge_scheduler),
             IngesterPool::default(),
             storage_resolver,
-            EventBroker::default(),
+            event_broker.clone(),
             split_cache,
         )
         .await?;
@@ -87,6 +117,10 @@ impl PipelineRuntime {
             universe,
             service,
             service_handle,
+            _cluster: cluster,
+            _event_broker: event_broker,
+            _report_splits_subscription_handle: report_handle,
+            _search_job_placer: placer,
         })
     }
 
@@ -158,6 +192,104 @@ impl PipelineRuntime {
         self.universe.quit().await;
         info!("indexing runtime stopped");
     }
+}
+
+/// Join the real cluster as a gossip-only member and wire
+/// [`SearchJobPlacer`] → [`ReportSplitsRequest`] on a shared [`EventBroker`].
+async fn start_cluster_mode(
+    config_path: &Path,
+) -> anyhow::Result<(
+    Cluster,
+    EventBroker,
+    EventSubscriptionHandle,
+    SearchJobPlacer,
+    NodeId,
+)> {
+    let config_uri = Uri::from_str(&config_path.display().to_string())
+        .with_context(|| format!("invalid cluster config path `{}`", config_path.display()))?;
+    let config_content = load_file(&StorageResolver::unconfigured(), &config_uri)
+        .await
+        .with_context(|| format!("failed to load cluster config `{config_uri}`"))?;
+    ensure_data_dir_from_config_bytes(&config_content)?;
+
+    let config_format = ConfigFormat::sniff_from_uri(&config_uri)?;
+    // Empty services: neither searcher nor indexer, so no control plane schedules this
+    // process and no root dials it. Lane sources stay enabled: false in the YAML.
+    let node_config = NodeConfig::load_with_enabled_services(
+        config_format,
+        config_content.as_slice(),
+        Some(&HashSet::new()),
+    )
+    .await
+    .with_context(|| format!("failed to parse cluster config `{config_uri}`"))?;
+
+    let service_node_id = node_config.node_id.clone();
+    info!(
+        node_id = %service_node_id,
+        cluster_id = %node_config.cluster_id,
+        gossip = %node_config.gossip_advertise_addr,
+        "joining rustie-cluster as gossip-only indexer"
+    );
+    let cluster = start_cluster_service(&node_config).await?;
+
+    let searcher_pool = SearcherPool::default();
+    let search_job_placer = SearchJobPlacer::new(searcher_pool.clone());
+    let max_message_size = ByteSize::mib(20);
+    let searcher_change_stream = cluster.change_stream().filter_map(move |cluster_change| {
+        Box::pin(async move {
+            match cluster_change {
+                ClusterChange::Add(node) if node.is_searcher() => {
+                    let chitchat_id = node.chitchat_id();
+                    info!(
+                        node_id = %chitchat_id.node_id,
+                        "adding searcher to indexer report placer pool"
+                    );
+                    let grpc_addr = node.grpc_advertise_addr;
+                    let client = create_search_client_from_grpc_addr(grpc_addr, max_message_size);
+                    Some(Change::Insert(grpc_addr, client))
+                }
+                ClusterChange::Remove(node) if node.is_searcher() => {
+                    let chitchat_id = node.chitchat_id();
+                    info!(
+                        node_id = %chitchat_id.node_id,
+                        "removing searcher from indexer report placer pool"
+                    );
+                    Some(Change::Remove(node.grpc_advertise_addr))
+                }
+                _ => None,
+            }
+        })
+    });
+    searcher_pool.listen_for_changes(searcher_change_stream);
+
+    let event_broker = EventBroker::default();
+    let subscription_handle =
+        event_broker.subscribe::<ReportSplitsRequest>(search_job_placer.clone());
+
+    Ok((
+        cluster,
+        event_broker,
+        subscription_handle,
+        search_job_placer,
+        service_node_id,
+    ))
+}
+
+fn ensure_data_dir_from_config_bytes(config_content: &[u8]) -> anyhow::Result<()> {
+    #[derive(serde::Deserialize)]
+    struct DataDirHint {
+        data_dir: Option<PathBuf>,
+    }
+    if let Ok(DataDirHint {
+        data_dir: Some(path),
+    }) = serde_yaml::from_slice::<DataDirHint>(config_content)
+        && !path.exists()
+    {
+        std::fs::create_dir_all(&path)
+            .with_context(|| format!("cannot create data_dir `{}`", path.display()))?;
+        info!(path = %path.display(), "created indexer cluster data_dir");
+    }
+    Ok(())
 }
 
 /// A one-node cluster on the in-memory gossip transport. `IndexingService` publishes its

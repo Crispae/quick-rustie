@@ -34,7 +34,7 @@ candidates already are the matches (`SurfacePlan::exact`, decided in the compile
 sentence lengths or per-sentence checks are read, so `[tag=VBD]` over 5M sentences counts in tens
 of milliseconds rather than a second. Sequences, phrases, quantifiers, conjunctions on one
 token, fuzzy tests and negation still go through the exact matcher; the differential test in
-`tests/leaf_search.rs` covers both kinds.
+`test/unit/leaf_search.rs` covers both kinds.
 
 Set `RUST_LOG=rustie_leaf=debug` to log, per segment, the candidate count and the time spent on
 candidates, leaf expansion and graph blocks.
@@ -42,5 +42,10 @@ candidates, leaf expansion and graph blocks.
 ## Tests
 
 ```bash
-cargo test -p rustie-leaf    # includes a differential test over real Quickwit splits
+cargo test -p rustie-leaf    # unit + integration tests under test/unit/
 ```
+
+Unit tests for private modules (`blocks`, `candidates`, `expand`, `query`, `sidecar`,
+`tokenizer`) live in [`test/unit/`](test/unit/) and are pulled into each `src/*.rs` via
+`#[path]`. Integration tests (`leaf_search`, `predicate_cache`) are the same directory,
+registered in `Cargo.toml`.

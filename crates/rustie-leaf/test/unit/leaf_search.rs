@@ -131,7 +131,38 @@ const PATTERNS: &[&str] = &[
     "[word=cat] [word=sat] >nsubj []",
     "[word=Dogs~] >nsubj [!tag=DT]",
     "[tag=NN] >/nsubj|det/ [word=nothing]",
+    // Same-token refinement: the endpoint's own test and its hop label must hold on one token
+    // (the handcrafted sentence has `cat` as `dobj` while `Dogs` is the `nsubj`).
+    "[tag=/V.*/] >nsubj [word=cat]",
+    "[tag=/NN.*/] <nsubj []",
+    // Tokens containing the slot separators, recovered exactly by `rustie_tokens`.
+    "[word=/1,000/]",
+    "[word=/a\\|b/]",
 ];
+
+/// A handcrafted document: a sentence where `cat` is the `dobj` while another token is the
+/// `nsubj` (a doc-level `word:cat AND incoming_edges:nsubj` match that fails on one token),
+/// and tokens containing `,` and `|`.
+fn handcrafted_doc() -> String {
+    let field = |name: &str, values: &[&str]| json!({"name": name, "$type": "ai.lum.odinson.TokensField", "tokens": values});
+    json!({"id": "handcrafted", "sentences": [
+        {"numTokens": 3, "fields": [
+            field("word", &["Dogs", "chase", "cat"]),
+            field("lemma", &["dog", "chase", "cat"]),
+            field("tag", &["NNS", "VBD", "NN"]),
+            {"name": "dependencies", "$type": "ai.lum.odinson.GraphField",
+             "edges": [[1, 0, "nsubj"], [1, 2, "dobj"]], "roots": [1]}
+        ]},
+        {"numTokens": 3, "fields": [
+            field("word", &["1,000", "a|b", "cat"]),
+            field("lemma", &["1,000", "a|b", "cat"]),
+            field("tag", &["CD", "SYM", "NN"]),
+            {"name": "dependencies", "$type": "ai.lum.odinson.GraphField",
+             "edges": [[2, 0, "nummod"], [2, 1, "dep"]], "roots": [2]}
+        ]}
+    ]})
+    .to_string()
+}
 
 async fn search(
     sandbox: &TestSandbox,
@@ -183,6 +214,11 @@ async fn leaf_search_equals_reference_evaluator() -> anyhow::Result<()> {
     let mut next_id = 0;
     for num_docs in [40, 150, 7] {
         let mut docs = Vec::new();
+        if num_docs == 7 {
+            let flattened = flatten_odinson_json(&handcrafted_doc())?;
+            docs.extend(flattened.iter().map(SentenceDoc::to_quickwit_json));
+            sentences.extend(flattened);
+        }
         for _ in 0..num_docs {
             let flattened = flatten_odinson_json(&odinson_doc(next_id, &mut rng))?;
             next_id += 1;
@@ -194,28 +230,44 @@ async fn leaf_search_equals_reference_evaluator() -> anyhow::Result<()> {
     assert!(sentences.len() > 300, "{}", sentences.len());
 
     let compiler = QueryCompiler::new();
-    for pattern in PATTERNS {
-        let compiled = compiler.compile(pattern)?;
-        let expected: BTreeSet<String> = sentences
-            .iter()
-            .filter(|s| reference_matches(&compiled, s))
-            .map(|s| s.sentence_id.clone())
-            .collect();
-        let (num_hits, got) = search(&sandbox, pattern, 10_000).await?;
-        assert_eq!(got, expected, "pattern {pattern:?}");
-        assert_eq!(
-            num_hits,
-            expected.len() as u64,
-            "exact count for {pattern:?}"
-        );
+    // Same-token refinement only narrows candidates before the exact matcher: hits must be the
+    // reference's with it on and with it off.
+    for refine in [true, false] {
+        rustie_leaf::set_same_token_refine(Some(refine));
+        for pattern in PATTERNS {
+            let compiled = compiler.compile(pattern)?;
+            let expected: BTreeSet<String> = sentences
+                .iter()
+                .filter(|s| reference_matches(&compiled, s))
+                .map(|s| s.sentence_id.clone())
+                .collect();
+            let (num_hits, got) = search(&sandbox, pattern, 10_000).await?;
+            assert_eq!(got, expected, "pattern {pattern:?} (refine {refine})");
+            assert_eq!(
+                num_hits,
+                expected.len() as u64,
+                "exact count for {pattern:?} (refine {refine})"
+            );
 
-        // A page smaller than the result still reports the exact total.
-        let (num_hits, page) = search(&sandbox, pattern, 3).await?;
-        assert_eq!(num_hits, expected.len() as u64);
-        assert_eq!(page.len(), expected.len().min(3));
-        assert!(page.is_subset(&expected));
-        eprintln!("{pattern:40} {} hits", expected.len());
+            // A page smaller than the result still reports the exact total.
+            let (num_hits, page) = search(&sandbox, pattern, 3).await?;
+            assert_eq!(num_hits, expected.len() as u64);
+            assert_eq!(page.len(), expected.len().min(3));
+            assert!(page.is_subset(&expected));
+            eprintln!("{pattern:40} {} hits (refine {refine})", expected.len());
+        }
     }
+    rustie_leaf::set_same_token_refine(None);
+
+    // The separator tokens really are found (not just "equal to an empty reference").
+    for pattern in ["[word=/1,000/]", "[word=/a\\|b/]"] {
+        let (num_hits, got) = search(&sandbox, pattern, 10).await?;
+        assert_eq!(num_hits, 1, "{pattern}");
+        assert!(got.contains("handcrafted_1"), "{pattern}: {got:?}");
+    }
+    // `cat` is only a `dobj` in the handcrafted sentence, never the `nsubj`.
+    let (_, got) = search(&sandbox, "[tag=/V.*/] >nsubj [word=cat]", 10_000).await?;
+    assert!(!got.contains("handcrafted_0"), "{got:?}");
     sandbox.assert_quit().await;
     Ok(())
 }

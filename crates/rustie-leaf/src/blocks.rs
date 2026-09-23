@@ -36,6 +36,10 @@ const COALESCE_GAP_BYTES: usize = 256 * 1024;
 /// A PROBE touching more than this fraction of the blocks reads the whole body instead.
 const SCAN_FRACTION: f64 = 0.5;
 
+/// A request whose newly cached blocks fill at least this fraction of its bytes is shared by
+/// those blocks instead of copied per block (see `SplitGraph::blocks_for_docs`).
+const MIN_SHARED_COVERAGE: f64 = 0.9;
+
 /// Concurrent range requests per split.
 const FETCH_CONCURRENCY: usize = 8;
 
@@ -52,6 +56,8 @@ impl BlockCache {
         self.entries.get(key).map(|(block, _)| block.clone())
     }
 
+    /// `size` is the block's own bytes; a block may share a request buffer with the other blocks
+    /// of that request, but only when they fill most of it (see `SplitGraph::blocks_for_docs`).
     fn put(&mut self, key: BlockKey, block: Arc<Gph2Block>, size: usize) {
         if let Some((_, old)) = self.entries.put(key, (block, size)) {
             self.bytes -= old;
@@ -199,22 +205,36 @@ impl SplitGraph {
         let body = |range: &Range<usize>, owned: &tantivy::directory::OwnedBytes| {
             Bytes::from_owner(owned.clone()).slice(0..range.len())
         };
-        let mut cache = block_cache().lock().expect("poisoned");
-        for (range, blocks, owned) in fetched {
-            let request = body(&range, &owned);
-            for block in blocks {
+        // The cache counts each block's own bytes, but a slice of the request buffer keeps the
+        // whole request alive: coalescing gaps, and on a SCAN every block already cached. When a
+        // request is mostly bytes nobody counts, each block gets its own copy; when its new
+        // blocks fill it (a SCAN of a cold file, a run of adjacent blocks), slicing wastes at most
+        // `1 - MIN_SHARED_COVERAGE` of it and saves copying hundreds of MiB.
+        // Parsed outside the cache lock: it is shared by every concurrent split search.
+        let mut parsed = Vec::with_capacity(missing.len());
+        for (range, blocks, owned) in &fetched {
+            let covered: usize = blocks.iter().map(|&b| self.block_range(b).len()).sum();
+            let share = covered as f64 >= MIN_SHARED_COVERAGE * range.len() as f64;
+            let request = body(range, owned);
+            for &block in blocks {
                 let block_range = self.block_range(block);
                 let local = block_range.start - range.start..block_range.end - range.start;
-                let parsed = Arc::new(
-                    Gph2Block::parse(request.slice(local), &self.trailer)
-                        .map_err(anyhow::Error::msg)?,
-                );
-                cache.put(
-                    (self.uuid.clone(), block),
-                    parsed.clone(),
-                    block_range.len(),
-                );
-                found.insert(block, parsed);
+                let bytes = if share {
+                    request.slice(local)
+                } else {
+                    Bytes::copy_from_slice(&request[local])
+                };
+                let block_data =
+                    Gph2Block::parse(bytes, &self.trailer).map_err(anyhow::Error::msg)?;
+                parsed.push((block, Arc::new(block_data), block_range.len()));
+            }
+        }
+        drop(fetched);
+        {
+            let mut cache = block_cache().lock().expect("poisoned");
+            for (block, block_data, size) in parsed {
+                cache.put((self.uuid.clone(), block), block_data.clone(), size);
+                found.insert(block, block_data);
             }
         }
         tracing::debug!(
@@ -245,3 +265,7 @@ impl SplitGraph {
         requests
     }
 }
+
+#[cfg(test)]
+#[path = "../test/unit/blocks.rs"]
+mod tests;

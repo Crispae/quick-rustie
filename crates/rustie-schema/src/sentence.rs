@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-use crate::encoding::{encode_edge_label_set, encode_tokens_for_quickwit};
+use crate::encoding::{encode_edges, encode_tokens};
+use crate::error::{Result, SchemaError};
 use crate::fields::{FIELD_INCOMING_EDGES, FIELD_OUTGOING_EDGES, TOKEN_FIELDS};
 use crate::graph::SentenceGraph;
 
@@ -20,10 +21,13 @@ pub struct SentenceDoc {
     /// Dependency graphs keyed by field name (`dependencies`, `dependencies_basic`, …).
     #[serde(default)]
     pub graphs: BTreeMap<String, SentenceGraph>,
-    /// Outgoing edge labels per token (from primary `dependencies` graph).
+    /// Outgoing edge labels per token position (from primary `dependencies` graph; see
+    /// [`SentenceGraph::edge_label_slots`]). Empty (zero-length) when there is no graph;
+    /// otherwise one (possibly empty) label set per token, length == `sentence_length`.
     #[serde(default)]
     pub outgoing_edges: Vec<Vec<String>>,
-    /// Incoming edge labels per token (from primary `dependencies` graph).
+    /// Incoming edge labels per token position, `"root"` included for a root token. Same
+    /// shape as `outgoing_edges`.
     #[serde(default)]
     pub incoming_edges: Vec<Vec<String>>,
 }
@@ -34,6 +38,42 @@ impl SentenceDoc {
         self.graphs
             .get(crate::graph::DEFAULT_GRAPH_FIELD)
             .or_else(|| self.graphs.get(crate::graph::DEFAULT_BASIC_GRAPH_FIELD))
+    }
+
+    /// Every token vector, and both edge-label vectors when a graph is present, must have
+    /// exactly `sentence_length` slots: the `rustie_tokens` / `rustie_edges` tokenizers assign
+    /// each slot's Tantivy position by its index in the pipe-joined string, so a short or long
+    /// vector silently shifts every later token's position instead of failing loudly.
+    pub fn validate(&self) -> Result<()> {
+        let n = self.sentence_length as usize;
+        for (field, toks) in &self.tokens {
+            if toks.len() != n {
+                return Err(SchemaError::validate(format!(
+                    "Document '{}' sentence '{}': field '{field}' has {} slots but \
+                     sentence_length is {n}",
+                    self.doc_id,
+                    self.sentence_id,
+                    toks.len()
+                )));
+            }
+        }
+        if self.primary_graph().is_some() {
+            for (field, edges) in [
+                (FIELD_OUTGOING_EDGES, &self.outgoing_edges),
+                (FIELD_INCOMING_EDGES, &self.incoming_edges),
+            ] {
+                if edges.len() != n {
+                    return Err(SchemaError::validate(format!(
+                        "Document '{}' sentence '{}': field '{field}' has {} slots but \
+                         sentence_length is {n}",
+                        self.doc_id,
+                        self.sentence_id,
+                        edges.len()
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// JSON object for Quickwit indexing.
@@ -47,19 +87,17 @@ impl SentenceDoc {
         map.insert("sentence_length".into(), json!(self.sentence_length));
 
         for (name, toks) in &self.tokens {
-            map.insert(
-                name.clone(),
-                Value::String(encode_tokens_for_quickwit(toks)),
-            );
+            map.insert(name.clone(), Value::String(encode_tokens(toks)));
         }
 
-        // Document-level edge-label sets for prefiltering (see `encode_edge_label_set`).
+        // Position-aware edge-label postings, read by the `rustie_edges` tokenizer (see
+        // `SentenceGraph::edge_label_slots`): omitted when there is no graph, same as before.
         for (field, edges) in [
             (FIELD_OUTGOING_EDGES, &self.outgoing_edges),
             (FIELD_INCOMING_EDGES, &self.incoming_edges),
         ] {
-            if let Some(labels) = encode_edge_label_set(edges) {
-                map.insert(field.into(), Value::String(labels));
+            if !edges.is_empty() {
+                map.insert(field.into(), Value::String(encode_edges(edges)));
             }
         }
 

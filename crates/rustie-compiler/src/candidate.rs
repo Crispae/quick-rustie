@@ -34,6 +34,15 @@ pub enum CandidateFilter {
     },
     And(Vec<CandidateFilter>),
     Or(Vec<CandidateFilter>),
+    /// Every child (`Term` or `Regex`, on any positionally-indexed field) must be satisfied by
+    /// *one* token, not just somewhere in the sentence. Built only from a graph endpoint's own
+    /// constraints plus its adjacent hop's label (see `GraphCompiler::endpoint_candidate`):
+    /// every such endpoint is a token that must exist in any match, so requiring its clauses
+    /// stays a sound superset. As a document-level test this is weaker than same-token — it only
+    /// requires each child somewhere in the sentence, same as `And` — the leaf tightens it to the
+    /// real same-token check on postings positions before reading graph data (see
+    /// `rustie-leaf`'s `refine_same_token`).
+    SameToken(Vec<CandidateFilter>),
 }
 
 impl CandidateFilter {
@@ -96,6 +105,22 @@ impl CandidateFilter {
                     _ => Self::Or(out),
                 }
             }
+            Self::SameToken(xs) => {
+                let mut out: Vec<Self> = xs
+                    .into_iter()
+                    .map(Self::normalize)
+                    .flat_map(|x| match x {
+                        Self::SameToken(inner) => inner,
+                        Self::All => Vec::new(),
+                        other => vec![other],
+                    })
+                    .collect();
+                match out.len() {
+                    0 => Self::All,
+                    1 => out.pop().unwrap(),
+                    _ => Self::SameToken(out),
+                }
+            }
             other => other,
         }
     }
@@ -136,6 +161,17 @@ impl CandidateFilter {
                     format!("({})", parts.join(" OR "))
                 }
             }
+            // As a document-level Quickwit query, "one token satisfies every child" has no
+            // representation weaker than "every child holds somewhere": same rendering as `And`.
+            // The real same-token check happens in the leaf, over postings positions.
+            Self::SameToken(xs) => {
+                let parts: Vec<String> = xs.iter().map(|x| x.to_quickwit_query()).collect();
+                if parts.len() == 1 {
+                    parts.into_iter().next().unwrap()
+                } else {
+                    format!("({})", parts.join(" AND "))
+                }
+            }
         }
     }
 }
@@ -172,5 +208,27 @@ mod tests {
             f.to_quickwit_query(),
             "(word:John AND outgoing_edges:nsubj)"
         );
+    }
+
+    #[test]
+    fn same_token_renders_as_and() {
+        let f = CandidateFilter::SameToken(vec![
+            CandidateFilter::term("word", "cat"),
+            CandidateFilter::term("incoming_edges", "nsubj"),
+        ]);
+        assert_eq!(f.to_quickwit_query(), "(word:cat AND incoming_edges:nsubj)");
+    }
+
+    #[test]
+    fn same_token_normalizes_like_and() {
+        // Nested SameToken flattens; All drops out; one child collapses to itself.
+        let f = CandidateFilter::SameToken(vec![
+            CandidateFilter::SameToken(vec![CandidateFilter::term("word", "cat")]),
+            CandidateFilter::All,
+        ])
+        .normalize();
+        assert_eq!(f, CandidateFilter::term("word", "cat"));
+
+        assert_eq!(CandidateFilter::SameToken(vec![]).normalize(), CandidateFilter::All);
     }
 }

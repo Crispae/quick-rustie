@@ -1,7 +1,8 @@
 //! Integration checks: tokens + graph → Quickwit JSON / index YAML.
 
 use rustie_schema::{
-    flatten_odinson_json, postings_index_config_yaml, IndexConfigOptions, PIPE_TOKENIZER_NAME,
+    flatten_odinson_json, postings_index_config_yaml, IndexConfigOptions,
+    RUSTIE_EDGE_TOKENIZER_NAME, RUSTIE_TOKEN_TOKENIZER_NAME,
 };
 
 const ODINSON: &str = r#"{
@@ -46,9 +47,10 @@ fn odinson_to_quickwit_with_graph() {
     let g = sentences[0].primary_graph().expect("graph");
     assert_eq!(g.edges.len(), 2);
     assert_eq!(g.roots, vec![1]);
+    // `edge_label_slots` dedupes/sorts each slot (see `SentenceGraph::edge_label_slots`).
     assert_eq!(
         sentences[0].outgoing_edges[1],
-        vec!["nsubj".to_string(), "dobj".to_string()]
+        vec!["dobj".to_string(), "nsubj".to_string()]
     );
 
     let line = sentences[0].to_ndjson_line();
@@ -59,14 +61,20 @@ fn odinson_to_quickwit_with_graph() {
     assert!(line.contains("outgoing_edges"));
     assert!(line.contains("nsubj"));
 
-    // Edge postings are per-sentence label *sets*: one term per label under `pipe_tokens`,
-    // so a head with several dependents is still found by any one of its labels.
+    // Edge postings are positional: "eats" (token 1) is the head of both `nsubj` and `dobj`,
+    // and both labels land at its own slot (comma-joined); "eats" is also the root, so it gets
+    // "root" added to its own incoming slot.
     let json = sentences[0].to_quickwit_json();
-    assert_eq!(json["outgoing_edges"], "dobj|nsubj");
-    assert_eq!(json["incoming_edges"], "dobj|nsubj");
+    assert_eq!(json["outgoing_edges"], "|dobj,nsubj||");
+    assert_eq!(json["incoming_edges"], "nsubj|root|dobj|");
+}
 
+#[test]
+fn quickwit_yaml_uses_rustie_tokenizers_not_pipe_tokens() {
     let yaml = postings_index_config_yaml(&IndexConfigOptions::default());
-    assert!(yaml.contains(PIPE_TOKENIZER_NAME));
+    assert!(yaml.contains(RUSTIE_TOKEN_TOKENIZER_NAME));
+    assert!(yaml.contains(RUSTIE_EDGE_TOKENIZER_NAME));
+    assert!(!yaml.contains("pipe_tokens"));
     assert!(yaml.contains("incoming_edges"));
     assert!(yaml.contains("dependencies"));
 }

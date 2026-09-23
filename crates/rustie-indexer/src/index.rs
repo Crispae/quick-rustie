@@ -62,13 +62,17 @@ pub enum InvalidDocPolicy {
 #[derive(Debug, Clone)]
 pub struct IndexerOptions {
     pub index_id: String,
-    /// File-backed metastore location, e.g. `s3://rustie-dev/metastore`.
+    /// Metastore URI. Default: `RUSTIE_METASTORE_URI`, else Postgres on localhost:5433.
     pub metastore_uri: String,
     /// Directory holding all indexes; the index lives at `{index_root_uri}/{index_id}`.
     pub index_root_uri: String,
     /// Scratch directory for split building and the split cache. `None` uses a temporary
     /// directory that is removed when the [`Indexer`] is dropped.
     pub data_dir: Option<PathBuf>,
+    /// Optional Quickwit node config used to join the real rustie-cluster as a gossip-only
+    /// member so live `ReportSplitsRequest`s reach searchers. When `None`, the indexer keeps a
+    /// private in-memory cluster (no split-cache reports).
+    pub cluster_config: Option<PathBuf>,
     /// Documents per raw batch handed to the doc processor by the source.
     pub source_batch_num_docs: usize,
     pub on_invalid_doc: InvalidDocPolicy,
@@ -87,13 +91,16 @@ pub struct IndexerOptions {
 
 impl IndexerOptions {
     /// Defaults aligned with `configs/ie_postings.yaml` on the given bucket:
-    /// metastore `s3://{bucket}/metastore`, index `s3://{bucket}/indexes/ie-postings`.
+    /// metastore from `RUSTIE_METASTORE_URI` (else Postgres), index `s3://{bucket}/indexes/ie-postings`.
     pub fn for_bucket(bucket: &str) -> Self {
         Self {
             index_id: "ie-postings".to_string(),
-            metastore_uri: format!("s3://{bucket}/metastore"),
+            metastore_uri: std::env::var("RUSTIE_METASTORE_URI").unwrap_or_else(|_| {
+                crate::store::DEFAULT_POSTGRES_METASTORE_URI.to_string()
+            }),
             index_root_uri: format!("s3://{bucket}/indexes"),
             data_dir: None,
+            cluster_config: None,
             source_batch_num_docs: 1_000,
             on_invalid_doc: InvalidDocPolicy::default(),
             split_num_docs_target: DEFAULT_SPLIT_NUM_DOCS_TARGET,
@@ -325,6 +332,7 @@ impl Indexer {
             &data_dir,
             metastore.clone(),
             storage_resolver.clone(),
+            options.cluster_config.as_deref(),
         )
         .await?;
 
@@ -1056,12 +1064,20 @@ mod tests {
     fn options_layout_matches_ie_postings_yaml() {
         let opts = IndexerOptions::for_bucket("rustie-dev");
         assert_eq!(opts.index_uri(), "s3://rustie-dev/indexes/ie-postings");
-        assert_eq!(opts.metastore_uri, "s3://rustie-dev/metastore");
+        assert_eq!(
+            opts.metastore_uri,
+            std::env::var("RUSTIE_METASTORE_URI").unwrap_or_else(|_| {
+                crate::store::DEFAULT_POSTGRES_METASTORE_URI.to_string()
+            })
+        );
+        assert!(opts.cluster_config.is_none());
         opts.validate().unwrap();
     }
 
     #[test]
     fn generated_config_matches_configs_ie_postings_yaml() {
+        // Loading the config validates its doc mapping, which needs `rustie_tokens` registered.
+        rustie_leaf::register();
         let opts = IndexerOptions::for_bucket("rustie-dev");
         let generated = build_index_config(&opts).unwrap();
 
@@ -1086,6 +1102,9 @@ mod tests {
 
     #[test]
     fn prepare_drops_unmapped_fields_and_rejects_bad_types() {
+        // `word`/`lemma`/… reference `rustie_tokens`, registered by this call (see
+        // `crates/rustie-leaf/src/lib.rs`), not declared in the mapping's own `tokenizers:`.
+        rustie_leaf::register();
         let opts = IndexerOptions::for_bucket("b");
         let config = build_index_config(&opts).unwrap();
         let mapper = build_doc_mapper(&config.doc_mapping, &config.search_settings).unwrap();
@@ -1121,6 +1140,7 @@ mod tests {
 
     #[test]
     fn parallel_prepare_equals_serial_in_any_pool_size() {
+        rustie_leaf::register();
         let opts = IndexerOptions::for_bucket("b");
         let config = build_index_config(&opts).unwrap();
         let mapper = build_doc_mapper(&config.doc_mapping, &config.search_settings).unwrap();

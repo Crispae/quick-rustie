@@ -10,7 +10,8 @@ Depends on [quickwit-oss/quickwit](https://github.com/quickwit-oss/quickwit) `v0
 | --- | --- |
 | **`rustie-query`** (`crates/rustie-query`) | RustIE query language — grammar, AST, `QueryParser` |
 | **`rustie-schema`** (`crates/rustie-schema`) | Odinson → sentence docs (tokens + graphs) + Quickwit mapping |
-| **`rustie-search`** (`crates/rustie-search`) | Run RustIE patterns against the index: `Searcher` library + `rustie-serve` HTTP API |
+| **`rustie-search`** (`crates/rustie-search`) | Run RustIE patterns against the index: `Searcher` library + `rustie-serve` HTTP API (embedded or gateway) |
+| **`rustie-node`** (`crates/rustie-node`) | Quickwit node with `rustie-leaf` registered (`serve_quickwit`; searcher + metastore) |
 | **`rustie-leaf`** (`crates/rustie-leaf`) | RustIE inside Quickwit leaf search: GPH2 split component + `rustie` query extension |
 | **`rustie-graph-store`** (`crates/rustie-graph-store`) | GPH2 graph file: blocks, range reads, streaming writer, merge |
 | `quickwit-indexing` | Indexing pipeline |
@@ -65,22 +66,109 @@ let storage = connect_minio(&MinioConfig::default()).await?;
 
 ## Index Odinson documents into MinIO
 
+Indexing is still a **batch** job (`rustie-index`): one process writes splits to object storage.
+With `--cluster-config`, it also joins the search cluster as a gossip-only member so live
+split-cache reports reach `rustie-node` searchers.
+
 ```bash
-cargo run -p rustie-indexer --bin rustie-index -- --data "data/processed_pubmed22n0008 (2)" --limit 10
+# Postgres metastore (default); Quickwit runs migrations on connect
+docker run -d --name rustie-postgres -p 5433:5432 \
+  -e POSTGRES_USER=rustie -e POSTGRES_PASSWORD=rustie -e POSTGRES_DB=rustie postgres:16
+
+cargo run --release -p rustie-indexer --bin rustie-index -- \
+  --data "data/processed_pubmed22n0008 (2)" \
+  --index-id pubmed-slots \
+  --cluster-config configs/rustie-indexer.yaml
 ```
 
+Defaults: metastore `postgres://rustie:rustie@127.0.0.1:5433/rustie` (override with
+`RUSTIE_METASTORE_URI` / `--metastore-uri`), index root `s3://<bucket>/indexes/<index-id>`.
+Old file-backed metastores stay readable via `--metastore-uri s3://…` until deleted; switching
+to Postgres means **re-indexing**, not migrating.
 See [`crates/rustie-indexer/README.md`](crates/rustie-indexer/README.md) for flags, idempotency and
 failure behavior. `quick_rustie::minio` re-exports the MinIO helpers now owned by `rustie-indexer`.
 
-## Query the index
+## Query the index (embedded, one process)
 
 ```bash
-cargo run --release -p rustie-search --bin rustie-serve &
+cargo run --release -p rustie-search --bin rustie-serve -- \
+  --index-id pubmed-slots &
 curl -G localhost:8080/v1/search --data-urlencode 'q=[word=John] >nsubj [pos=VBZ]' -d limit=5
 ```
 
-See [`crates/rustie-search/README.md`](crates/rustie-search/README.md) and, for the design
-(what RustIE's storage layer maps to in Quickwit, and the limits), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+## Multi-node search
+
+### Design
+
+RustIE matching runs **inside Quickwit leaf search** (`rustie-leaf`). Distributed fan-out is
+Quickwit’s own root/leaf path — we do not reimplement clustering in `rustie-serve`.
+
+```
+  pattern
+    │
+    ▼
+  rustie-serve (HTTP gateway)
+    │  compile → Extension QueryAst { kind: "rustie" }
+    │  gRPC SearchService::root_search  (one --searcher-endpoint)
+    ▼
+  rustie-node A (root + leaf) ──chitchat── rustie-node B (leaf)
+    │                                      │
+    ├─ local leaf_search (rustie-leaf)     └─ gRPC leaf_search
+    └─ merge hits / counts
+         │
+         ▼
+  MinIO: s3://…/indexes/<index-id>   Postgres: metastore (default)
+```
+
+| Process | Role |
+| --- | --- |
+| **`rustie-index`** | Batch Odinson → splits on MinIO. With `--cluster-config`, gossip-only cluster member that reports new splits into searchers' split caches. |
+| **`rustie-node`** | `register()` + `serve_quickwit`: gossip, gRPC search, exact leaf match. Every node runs **searcher + metastore** and opens the **same** Postgres (or s3://) metastore URI. Enable `searcher.split_cache` for live reports. |
+| **`rustie-serve`** | Odinson HTTP API. With `--searcher-endpoint`, only dials remote `root_search` and renders spans; without it, embeds the search stack (laptop default). |
+
+- **N = 1:** one `rustie-node`, `peer_seeds: []`.
+- **N ≥ 2:** shared `cluster_id`, each node unique `node_id` / ports / `data_dir`; `peer_seeds` = peers’ **gossip** `host:port`.
+- Gateway dials **one** node’s **gRPC** port (root entry SPOF); that node fans leaf jobs across the pool via rendezvous hashing.
+- Details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`crates/rustie-node/README.md`](crates/rustie-node/README.md), [`crates/rustie-search/README.md`](crates/rustie-search/README.md).
+
+### Run two nodes on one machine (example: `pubmed-slots`)
+
+Requires MinIO + Postgres up and an index already in the metastore (e.g. `pubmed-slots` under
+`postgres://…` / `s3://rustie-dev/indexes/pubmed-slots`).
+
+```bash
+export PROTOC=/path/to/protoc   # if needed
+cargo build --release -p rustie-node -p rustie-search
+
+mkdir -p /tmp/rustie-node-1-data /tmp/rustie-node-2-data
+
+# terminal 1 — searcher + metastore (gRPC :7281, gossip :7282)
+cargo run --release -p rustie-node -- --config configs/rustie-node-1.yaml
+
+# terminal 2 — peer (gRPC :7381, gossip :7382; peer_seeds → node 1 gossip)
+cargo run --release -p rustie-node -- --config configs/rustie-node-2.yaml
+
+# terminal 3 — Odinson HTTP gateway → node 1 root
+cargo run --release -p rustie-search --bin rustie-serve -- \
+  --index-id pubmed-slots \
+  --metastore-uri 'postgres://rustie:rustie@127.0.0.1:5433/rustie' \
+  --searcher-endpoint 127.0.0.1:7281 \
+  --bind 127.0.0.1:8080
+```
+
+```bash
+curl -s localhost:8080/v1/index
+curl -G localhost:8080/v1/search \
+  --data-urlencode 'q=[entity=/B-gen.*/] >nsubj [tag=VBZ]' -d limit=5 -d count=true
+```
+
+Configs: [`configs/rustie-node-1.yaml`](configs/rustie-node-1.yaml),
+[`configs/rustie-node-2.yaml`](configs/rustie-node-2.yaml). Align `metastore_uri` /
+`storage.s3` with wherever you indexed; `--index-id` must match the metastore entry
+(`pubmed-slots`, not `ie-postings`, unless that is what you built).
+
+See [`crates/rustie-search/README.md`](crates/rustie-search/README.md) for the HTTP API and, for
+storage/leaf design limits, [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Quickwit fork
 

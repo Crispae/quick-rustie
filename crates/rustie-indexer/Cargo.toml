@@ -21,7 +21,9 @@ clap = { version = "4", features = ["derive", "env"] }
 flate2 = "1"
 futures = "0.3"
 rayon = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 sha2 = "0.10"
 tempfile = "3"
 thiserror = "1"
@@ -42,10 +44,13 @@ quickwit-doc-mapper = { git = "https://github.com/quickwit-oss/quickwit.git", ta
 quickwit-index-management = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 quickwit-ingest = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 quickwit-indexing = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
-quickwit-metastore = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-metastore = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0", features = ["postgres"] }
 quickwit-proto = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-search = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 quickwit-storage = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 quickwit-transport = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+
+bytesize = "2.7.0"
 
 # Same pin as the root crate (see comment there).
 tokio = { version = "=1.52.3", features = ["full"] }

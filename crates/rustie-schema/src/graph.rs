@@ -60,6 +60,36 @@ impl SentenceGraph {
         labels_by_direction(num_tokens, &self.edge_tuples())
     }
 
+    /// Outgoing / incoming labels per token position for the position-aware edge postings
+    /// (`outgoing_edges` / `incoming_edges`, read by the `rustie_edges` tokenizer): like
+    /// [`Self::labels_by_direction`], plus `"root"` added to `incoming[r]` for every root `r`
+    /// (so `[incoming=root]` is a queryable, cheap filter), and each slot deduplicated (an
+    /// enhanced-UD token can have the same label twice; postings only need presence).
+    pub fn edge_label_slots(&self, num_tokens: usize) -> (Vec<Vec<String>>, Vec<Vec<String>>) {
+        let (outgoing, incoming) = self.labels_by_direction(num_tokens);
+        let dedupe = |slots: Vec<Vec<String>>| -> Vec<Vec<String>> {
+            slots
+                .into_iter()
+                .map(|labels| {
+                    labels
+                        .into_iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect()
+                })
+                .collect()
+        };
+        let outgoing = dedupe(outgoing);
+        let mut incoming = incoming;
+        for &r in &self.roots {
+            if let Some(labels) = incoming.get_mut(r as usize) {
+                labels.push("root".to_string());
+            }
+        }
+        let incoming = dedupe(incoming);
+        (outgoing, incoming)
+    }
+
     /// Compact adjacency for in-memory traversal: `out[from] = [(to, rel), …]`.
     pub fn outgoing_adjacency(&self, num_tokens: usize) -> Vec<Vec<(u32, String)>> {
         let mut out = vec![Vec::new(); num_tokens];
@@ -113,5 +143,44 @@ impl SentenceGraph {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edge_label_slots_adds_root_and_dedupes() {
+        // "eats" (1) is root, is nsubj-headed by "John" (0) and dobj-headed by "pizza" (2), and
+        // has a duplicate nsubj:pass edge from an enhanced graph, which must collapse to one.
+        let g = SentenceGraph::new(
+            "dependencies",
+            vec![
+                DependencyEdge::new(1, 0, "nsubj"),
+                DependencyEdge::new(1, 0, "nsubj"),
+                DependencyEdge::new(1, 2, "dobj"),
+            ],
+            vec![1],
+        );
+        let (outgoing, incoming) = g.edge_label_slots(3);
+        assert_eq!(outgoing, vec![vec![], vec!["dobj".to_string(), "nsubj".to_string()], vec![]]);
+        assert_eq!(
+            incoming,
+            vec![
+                vec!["nsubj".to_string()],
+                vec!["root".to_string()],
+                vec!["dobj".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn edge_label_slots_out_of_range_root_does_not_panic() {
+        // `roots` is normally checked by `validate` before this runs; stay defensive anyway.
+        let g = SentenceGraph::new("dependencies", vec![], vec![5]);
+        let (outgoing, incoming) = g.edge_label_slots(2);
+        assert_eq!(outgoing, vec![Vec::<String>::new(), Vec::new()]);
+        assert_eq!(incoming, vec![Vec::<String>::new(), Vec::new()]);
     }
 }

@@ -57,6 +57,40 @@ pub fn split_escaped_raw(s: &str, sep: char) -> Vec<String> {
     out
 }
 
+/// One `(position, term)` pair a position-aware tokenizer emits from a pipe-joined string, as
+/// produced by [`encode_tokens`] / [`encode_edges`].
+///
+/// - Split on unescaped `|`; the slot's index becomes its position, so a field's position always
+///   equals its linguistic token index.
+/// - When `multi`, each slot is further split on unescaped `,` (several terms at one position,
+///   e.g. edge labels).
+/// - An empty piece contributes no term, but the position still advances: this is what keeps an
+///   empty slot from shifting every later token's position.
+/// - Within one slot, duplicate terms are removed: postings only need presence, not count.
+///
+/// Pure logic (no tantivy dependency) so it can be unit tested here; the tantivy `Tokenizer` that
+/// wraps it lives in `rustie-leaf` (the crate that depends on tantivy).
+pub fn slot_terms(text: &str, multi: bool) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for (position, slot) in split_escaped_raw(text, '|').iter().enumerate() {
+        if multi {
+            let mut seen = std::collections::BTreeSet::new();
+            for piece in split_escaped_raw(slot, ',') {
+                let term = unescape_join_field(&piece);
+                if !term.is_empty() && seen.insert(term.clone()) {
+                    out.push((position, term));
+                }
+            }
+        } else {
+            let term = unescape_join_field(slot);
+            if !term.is_empty() {
+                out.push((position, term));
+            }
+        }
+    }
+    out
+}
+
 /// Encode tokens into `a|b|c` form (RustIE-compatible, preserves empty slots).
 pub fn encode_tokens(tokens: &[String]) -> String {
     tokens
@@ -77,25 +111,13 @@ pub fn decode_tokens(encoded: &str) -> Vec<String> {
         .collect()
 }
 
-/// Encode for Quickwit `pipe_tokens` regex tokenizer: empty → [`EMPTY_TOKEN_SENTINEL`].
+/// Decode Quickwit-stored pipe string, mapping the legacy empty sentinel back to `""`.
 ///
-/// Tokens containing `|` are escaped for storage but the stock regex tokenizer
-/// will not unescape them; prefer validating absence of `|` at flatten time.
-pub fn encode_tokens_for_quickwit(tokens: &[String]) -> String {
-    tokens
-        .iter()
-        .map(|s| {
-            if s.is_empty() {
-                EMPTY_TOKEN_SENTINEL.to_string()
-            } else {
-                escape_join_field(s)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("|")
-}
-
-/// Decode Quickwit-stored pipe string, mapping the empty sentinel back to `""`.
+/// A no-op beyond [`decode_tokens`] for anything [`encode_tokens`] produced (the current
+/// encoding, read by `rustie_tokens`): the sentinel only ever appears in a split indexed
+/// before the `rustie_tokens`/`rustie_edges` tokenizers, back when Quickwit's stock regex
+/// tokenizer (`[^|]+`) could not match an empty slot and needed a placeholder to keep
+/// positions aligned. Kept so those splits still render correctly.
 pub fn decode_tokens_from_quickwit(encoded: &str) -> Vec<String> {
     decode_tokens(encoded)
         .into_iter()
@@ -151,68 +173,6 @@ pub fn decode_edges(encoded: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// Encode for Quickwit `pipe_tokens`: empty positions → [`EMPTY_TOKEN_SENTINEL`].
-///
-/// Multi-label slots stay comma-joined (`dobj,prep`) as one regex token under stock
-/// Quickwit; prefer stored [`crate::SentenceGraph`] JSON for exact multi-edge work.
-pub fn encode_edges_for_quickwit(edges_per_position: &[Vec<String>]) -> String {
-    edges_per_position
-        .iter()
-        .map(|labels| {
-            if labels.is_empty() {
-                EMPTY_TOKEN_SENTINEL.to_string()
-            } else {
-                labels
-                    .iter()
-                    .map(|s| escape_join_field(s))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("|")
-}
-
-/// Decode Quickwit edge encoding, mapping empty sentinel → empty label list.
-pub fn decode_edges_from_quickwit(encoded: &str) -> Vec<Vec<String>> {
-    decode_edges(encoded)
-        .into_iter()
-        .map(|labels| {
-            if labels.len() == 1 && labels[0] == EMPTY_TOKEN_SENTINEL {
-                Vec::new()
-            } else {
-                labels
-                    .into_iter()
-                    .filter(|l| l != EMPTY_TOKEN_SENTINEL)
-                    .collect()
-            }
-        })
-        .collect()
-}
-
-/// Encode the *set* of edge labels present in a sentence for the Quickwit postings fields
-/// (`outgoing_edges` / `incoming_edges`): distinct labels, sorted, joined with `|`.
-///
-/// Why a set and not [`encode_edges_for_quickwit`]: Quickwit's tokenizers cannot emit several
-/// tokens at one position (RustIE's custom `edge_positions` tokenizer can), so a per-token
-/// encoding would either lose labels (comma-joined slots become one opaque term) or misalign
-/// positions. What a Quickwit prefilter can actually use is document-level membership, and
-/// one term per label gives exactly that. Per-token structure lives in the stored graph JSON.
-///
-/// Returns `None` when there are no labels (the field is then omitted).
-pub fn encode_edge_label_set(edges_per_position: &[Vec<String>]) -> Option<String> {
-    let labels: std::collections::BTreeSet<&str> = edges_per_position
-        .iter()
-        .flatten()
-        .map(String::as_str)
-        .collect();
-    if labels.is_empty() {
-        None
-    } else {
-        Some(labels.into_iter().collect::<Vec<_>>().join("|"))
-    }
-}
-
 /// Build outgoing / incoming label lists from `(from, to, rel)` edges.
 pub fn labels_by_direction(
     num_tokens: usize,
@@ -238,20 +198,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn edge_label_set_is_distinct_sorted_and_optional() {
-        let edges = vec![
-            vec![],
-            vec!["nsubj".to_string(), "advmod".to_string()],
-            vec!["nsubj".to_string()],
-        ];
-        assert_eq!(
-            encode_edge_label_set(&edges).as_deref(),
-            Some("advmod|nsubj")
-        );
-        assert_eq!(encode_edge_label_set(&[vec![], vec![]]), None);
-    }
-
-    #[test]
     fn roundtrip_simple() {
         let tokens = vec!["John".into(), "eats".into(), "pizza".into()];
         assert_eq!(decode_tokens(&encode_tokens(&tokens)), tokens);
@@ -271,11 +217,13 @@ mod tests {
     }
 
     #[test]
-    fn quickwit_empty_sentinel_roundtrip() {
-        let tokens = vec!["a".into(), "".into(), "c".into()];
-        let encoded = encode_tokens_for_quickwit(&tokens);
-        assert!(encoded.contains(EMPTY_TOKEN_SENTINEL));
-        assert_eq!(decode_tokens_from_quickwit(&encoded), tokens);
+    fn legacy_quickwit_empty_sentinel_still_decodes() {
+        // A split indexed before `rustie_tokens` stored this sentinel for an empty slot.
+        let legacy = format!("a|{EMPTY_TOKEN_SENTINEL}|c");
+        assert_eq!(
+            decode_tokens_from_quickwit(&legacy),
+            vec!["a".to_string(), "".to_string(), "c".to_string()]
+        );
     }
 
     #[test]
@@ -291,14 +239,6 @@ mod tests {
     }
 
     #[test]
-    fn quickwit_edge_empty_sentinel() {
-        let edges = vec![vec![], vec!["nsubj".into()], vec![]];
-        let enc = encode_edges_for_quickwit(&edges);
-        assert!(enc.contains(EMPTY_TOKEN_SENTINEL));
-        assert_eq!(decode_edges_from_quickwit(&enc), edges);
-    }
-
-    #[test]
     fn labels_by_direction_builds_lists() {
         let edges = vec![(1u32, 0u32, "det".into()), (2u32, 1u32, "nsubj".into())];
         let (out, inc) = labels_by_direction(3, &edges);
@@ -306,5 +246,46 @@ mod tests {
         assert_eq!(out[2], vec!["nsubj".to_string()]);
         assert_eq!(inc[0], vec!["det".to_string()]);
         assert_eq!(inc[1], vec!["nsubj".to_string()]);
+    }
+
+    #[test]
+    fn slot_terms_single_value_skips_empty_but_advances_position() {
+        let terms = slot_terms(&encode_tokens(&["The".into(), "".into(), "cat".into()]), false);
+        assert_eq!(
+            terms,
+            vec![(0, "The".to_string()), (2, "cat".to_string())]
+        );
+    }
+
+    #[test]
+    fn slot_terms_multi_splits_on_comma_and_dedupes() {
+        let edges = vec![
+            vec!["det".into()],
+            vec![],
+            vec!["nsubj".into(), "advmod".into(), "nsubj".into()],
+        ];
+        let terms = slot_terms(&encode_edges(&edges), true);
+        assert_eq!(
+            terms,
+            vec![
+                (0, "det".to_string()),
+                (2, "nsubj".to_string()),
+                (2, "advmod".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn slot_terms_unescapes_pipe_comma_and_backslash() {
+        let tokens = vec!["a|b".into(), "c,d".into(), r"e\f".into()];
+        let terms = slot_terms(&encode_tokens(&tokens), false);
+        assert_eq!(
+            terms,
+            vec![
+                (0, "a|b".to_string()),
+                (1, "c,d".to_string()),
+                (2, r"e\f".to_string()),
+            ]
+        );
     }
 }

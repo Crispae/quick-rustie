@@ -167,6 +167,12 @@ fn constraint_to_clauses(constraint: &Constraint) -> Option<Vec<(String, EdgeMat
                     _ => return None,
                 }
             }
+            // Each alternative constrains a different field: the endpoint token can satisfy any
+            // one of them alone, so no single field's clause is required. Requiring all of them
+            // (an AND across fields) would drop real matches.
+            if by_field.len() > 1 {
+                return None;
+            }
             Some(
                 by_field
                     .into_iter()
@@ -305,6 +311,12 @@ impl GraphCompiler {
             }
         }
 
+        // `filters` are this endpoint's own constraints (`clauses`), each `Term`/`Regex`. Below,
+        // any edge-label clause folded in from the adjacent hop joins them: they all constrain
+        // this one endpoint token, so `SameToken` (not `And`) is the sound shape — see its doc
+        // comment. `endpoint_clauses` only returns clauses for a mandatory single-token endpoint
+        // (`Pattern::as_token`; a `Repetition` or span endpoint yields `None` upstream), so this
+        // endpoint always exists in a match and its clauses are safe to require.
         match hop_edge(hop, is_first)? {
             HopEdge::TokenOnly => {
                 if filters.is_empty() {
@@ -312,7 +324,7 @@ impl GraphCompiler {
                 } else if filters.len() == 1 {
                     filters.pop()
                 } else {
-                    Some(CandidateFilter::And(filters))
+                    Some(CandidateFilter::SameToken(filters))
                 }
             }
             HopEdge::Labeled { outgoing, matcher } => {
@@ -326,7 +338,7 @@ impl GraphCompiler {
                 match filters.len() {
                     0 => None,
                     1 => filters.pop(),
-                    _ => Some(CandidateFilter::And(filters)),
+                    _ => Some(CandidateFilter::SameToken(filters)),
                 }
             }
         }
@@ -421,6 +433,81 @@ mod tests {
         assert!(candidate("[word=a] >det+ [word=b]")
             .to_quickwit_query()
             .contains("det"));
+    }
+
+    #[test]
+    fn disjunction_across_fields_requires_neither_field() {
+        // Either alternative may hold alone: requiring both would drop real matches.
+        let q = candidate("[word=cat | lemma=dog] >nsubj []").to_quickwit_query();
+        assert!(!q.contains("word:") && !q.contains("lemma:"), "{q}");
+        assert!(q.contains("outgoing_edges:nsubj"), "{q}");
+    }
+
+    #[test]
+    fn disjunction_on_one_field_is_one_alternation() {
+        let q = candidate("[word=cat | word=dog] >nsubj []").to_quickwit_query();
+        assert!(q.contains("word:/(cat|dog)/"), "{q}");
+    }
+
+    #[test]
+    fn both_endpoints_become_same_token_nodes() {
+        // [tag=VBD] >nsubj [word=cat]: the src's own `tag=VBD` plus the hop's outgoing label
+        // constrain the src token; the dst's own `word=cat` plus the (flipped) incoming label
+        // constrain the dst token. Each pair must hold on one token, not just in the sentence.
+        // (`hop_reqs` separately requires the same edge labels again as bare, sentence-level
+        // terms — redundant with the `SameToken`s but not unsound — so this only asserts the
+        // `SameToken`s are present, not that they are the whole filter.)
+        let f = candidate("[tag=VBD] >nsubj [word=cat]");
+        let CandidateFilter::And(parts) = &f else {
+            panic!("expected And of several conjuncts: {f:?}");
+        };
+        let same_tokens: Vec<&Vec<CandidateFilter>> = parts
+            .iter()
+            .filter_map(|p| match p {
+                CandidateFilter::SameToken(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(same_tokens.len(), 2, "{f:?}");
+        assert!(same_tokens.iter().any(|c| c.contains(&CandidateFilter::term("tag", "VBD"))
+            && c.contains(&CandidateFilter::term(FIELD_OUTGOING_EDGES, "nsubj"))));
+        assert!(same_tokens.iter().any(|c| c.contains(&CandidateFilter::term("word", "cat"))
+            && c.contains(&CandidateFilter::term(FIELD_INCOMING_EDGES, "nsubj"))));
+    }
+
+    /// Whether `f` contains a `SameToken` node anywhere (including nested).
+    fn contains_same_token(f: &CandidateFilter) -> bool {
+        match f {
+            CandidateFilter::SameToken(_) => true,
+            CandidateFilter::And(xs) | CandidateFilter::Or(xs) => {
+                xs.iter().any(contains_same_token)
+            }
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn quantified_endpoints_never_produce_a_same_token() {
+        // `endpoint_candidate` only builds `SameToken` from `endpoint_clauses`, which is `None`
+        // for any `Pattern::Repetition` endpoint (`Pattern::as_token` excludes it unconditionally,
+        // regardless of the quantifier's `min`) and for a multi-atom span (flattened to several
+        // `FlatPatternStep`s, none of which is the constraint adjacent to the hop once there is
+        // more than one). A `SameToken` therefore only ever comes from a bare, mandatory
+        // single-token endpoint — the invariant `required_terms` (in `rustie-leaf`) relies on to
+        // treat a `SameToken`'s terms as required. The other side of each query is a wildcard
+        // (`[]`), which likewise never contributes a `SameToken` (`Constraint::Wildcard` has no
+        // clauses either), so any `SameToken` found here could only have come from the quantified
+        // or span side under test.
+        for q in [
+            "[word=cat]? >nsubj []",
+            "[word=cat]* >nsubj []",
+            "[word=cat]+ >nsubj []",
+            "[tag=/NN.*/]+ >nsubj []",
+            "[] >nsubj [word=a] [word=b]",
+        ] {
+            let f = candidate(q);
+            assert!(!contains_same_token(&f), "{q}: {f:?}");
+        }
     }
 
     #[test]

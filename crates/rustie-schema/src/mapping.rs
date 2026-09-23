@@ -1,8 +1,8 @@
 //! Emit Quickwit index / doc_mapping YAML for IE postings (+ graph storage).
 
 use crate::fields::{
-    DEFAULT_INDEXED_TOKEN_FIELDS, FIELD_INCOMING_EDGES, FIELD_OUTGOING_EDGES, PIPE_TOKENIZER_NAME,
-    PIPE_TOKENIZER_PATTERN,
+    DEFAULT_INDEXED_TOKEN_FIELDS, FIELD_INCOMING_EDGES, FIELD_OUTGOING_EDGES,
+    RUSTIE_EDGE_TOKENIZER_NAME, RUSTIE_TOKEN_TOKENIZER_NAME,
 };
 use crate::graph::{DEFAULT_BASIC_GRAPH_FIELD, DEFAULT_GRAPH_FIELD};
 
@@ -79,7 +79,7 @@ fn push_token_field_mappings(lines: &mut Vec<String>, opts: &PostingsMappingOpti
     for field in &opts.token_fields {
         lines.push(format!("    - name: {field}"));
         lines.push("      type: text".to_string());
-        lines.push(format!("      tokenizer: {PIPE_TOKENIZER_NAME}"));
+        lines.push(format!("      tokenizer: {RUSTIE_TOKEN_TOKENIZER_NAME}"));
         lines.push("      record: position".to_string());
         lines.push(format!("      stored: {}", opts.store_tokens));
         if opts.fast_tokens {
@@ -92,10 +92,13 @@ fn push_edge_posting_fields(lines: &mut Vec<String>) {
     for field in [FIELD_OUTGOING_EDGES, FIELD_INCOMING_EDGES] {
         lines.push(format!("    - name: {field}"));
         lines.push("      type: text".to_string());
-        lines.push(format!("      tokenizer: {PIPE_TOKENIZER_NAME}"));
-        // Membership only (see `encode_edge_label_set`): no positions, and not stored since the
-        // stored graph JSON already carries every edge.
-        lines.push("      record: basic".to_string());
+        lines.push(format!("      tokenizer: {RUSTIE_EDGE_TOKENIZER_NAME}"));
+        // Positional (see `SentenceGraph::edge_label_slots` / `encoding::slot_terms`): every
+        // label at a token's slot lands at that token's Tantivy position, so a same-token
+        // candidate filter can require e.g. `word:cat AND incoming_edges:nsubj` on one token
+        // instead of just "somewhere in this sentence". Not stored: the graph JSON already
+        // carries every edge for rendering.
+        lines.push("      record: position".to_string());
         lines.push("      stored: false".to_string());
     }
 }
@@ -113,14 +116,6 @@ fn push_graph_json_fields(lines: &mut Vec<String>, opts: &PostingsMappingOptions
         lines.push("      stored: true".to_string());
         lines.push("      indexed: false".to_string());
     }
-}
-
-fn push_tokenizer(lines: &mut Vec<String>) {
-    lines.push("  tokenizers:".to_string());
-    lines.push(format!("    - name: {PIPE_TOKENIZER_NAME}"));
-    lines.push("      type: regex".to_string());
-    lines.push(format!("      pattern: \"{PIPE_TOKENIZER_PATTERN}\""));
-    lines.push("      filters: []".to_string());
 }
 
 fn push_field_mappings_body(lines: &mut Vec<String>, opts: &PostingsMappingOptions) {
@@ -144,13 +139,18 @@ fn push_field_mappings_body(lines: &mut Vec<String>, opts: &PostingsMappingOptio
     push_graph_json_fields(lines, opts);
 }
 
-/// YAML for the `doc_mapping:` block (including `tokenizers`).
+/// YAML for the `doc_mapping:` block.
+///
+/// No `tokenizers:` section: `rustie_tokens` / `rustie_edges` are registered process-wide by
+/// `rustie_leaf::register()` through the Quickwit fork's tokenizer-registration hook, not
+/// declared per-mapping (Quickwit's config tokenizers are a closed list that cannot place
+/// several terms at one token position). Naming either as a custom tokenizer here would be
+/// rejected as shadowing a built-in name.
 pub fn postings_doc_mapping_yaml(opts: &PostingsMappingOptions) -> String {
     let mut lines = Vec::new();
     lines.push("doc_mapping:".to_string());
     lines.push("  mode: strict".to_string());
     push_field_mappings_body(&mut lines, opts);
-    push_tokenizer(&mut lines);
     lines.join("\n") + "\n"
 }
 
@@ -169,7 +169,6 @@ pub fn postings_index_config_yaml(opts: &IndexConfigOptions) -> String {
         lines.push("  tag_fields: [doc_id]".to_string());
     }
     push_field_mappings_body(&mut lines, &opts.mapping);
-    push_tokenizer(&mut lines);
     lines.push(String::new());
     lines.push("indexing_settings:".to_string());
     lines.push(format!(
@@ -190,13 +189,31 @@ mod tests {
     #[test]
     fn yaml_includes_graph_and_edge_fields() {
         let yaml = postings_index_config_yaml(&IndexConfigOptions::default());
-        assert!(yaml.contains("pipe_tokens"));
+        assert!(yaml.contains(RUSTIE_TOKEN_TOKENIZER_NAME));
+        assert!(yaml.contains(RUSTIE_EDGE_TOKENIZER_NAME));
+        assert!(!yaml.contains("pipe_tokens"));
+        assert!(!yaml.contains("tokenizers:"));
         assert!(yaml.contains("incoming_edges"));
         assert!(yaml.contains("outgoing_edges"));
         assert!(yaml.contains("dependencies"));
         assert!(yaml.contains("dependencies_basic"));
         assert!(yaml.contains("type: json"));
         let _: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("valid yaml");
+    }
+
+    #[test]
+    fn edge_fields_are_positional() {
+        let yaml = postings_index_config_yaml(&IndexConfigOptions::default());
+        let config: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let fields = config["doc_mapping"]["field_mappings"].as_sequence().unwrap();
+        for name in ["incoming_edges", "outgoing_edges"] {
+            let field = fields
+                .iter()
+                .find(|f| f["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("field '{name}' missing from mapping"));
+            assert_eq!(field["record"].as_str(), Some("position"));
+            assert_eq!(field["tokenizer"].as_str(), Some(RUSTIE_EDGE_TOKENIZER_NAME));
+        }
     }
 
     #[test]

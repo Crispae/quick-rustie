@@ -15,9 +15,12 @@ indexing
 search
   pattern ─rustie-search─▶ Quickwit root search ─▶ leaf search, per split (rustie-leaf):
                              QueryAst::Extension      1. candidates from postings (compiler's filter)
-                             {kind: "rustie"}         2. positions of every tested term
-                                                      3. GPH2 blocks of the candidates (range reads)
-                                                      4. exact match per candidate (span VM /
+                             {kind: "rustie"}         2. graph patterns: keep candidates where one
+                                                         token holds an endpoint's tests + hop label
+                                                         (postings positions, no GPH2 read)
+                                                      3. positions of every tested term
+                                                      4. GPH2 blocks of the candidates (range reads)
+                                                      5. exact match per candidate (span VM /
                                                          bound graph evaluator); only matches reach
                                                          the collector
                            ◀─ exact num_hits, top-k, search_after, fetched docs = matches only
@@ -34,11 +37,50 @@ search
 | `rustie-graph-store` | GPH2: block-structured, range-readable, mergeable per-split graph file (ported from RustIE) |
 | `rustie-leaf` | The Quickwit extensions: GPH2 split sidecar + `rustie` query (candidates, warmup, scorer) |
 | `rustie-indexer` | Index Odinson data into MinIO/S3 through Quickwit's indexing service |
-| `rustie-search` | `Searcher` library + `rustie-serve` HTTP API |
+| `rustie-search` | `Searcher` library + `rustie-serve` HTTP API (embedded stack or gateway to `rustie-node`) |
+| `rustie-node` | Quickwit node (`serve_quickwit`) with `rustie_leaf::register()`; owns cluster / gRPC leaf+root |
 
 The Quickwit fork is <https://github.com/Crispae/quickwit-custom> (branch `rustie-ext`); see its
-`docs/rustie-fork.md` for the three hooks and how to rebase them. Every Quickwit crate is
+`docs/rustie-fork.md` for the four hooks and how to rebase them. Every Quickwit crate is
 redirected to it, at a pinned commit, by the `[patch]` section of the root `Cargo.toml`.
+
+## Search topologies
+
+```
+embedded (default rustie-serve)
+  pattern ─rustie-serve─▶ in-process root_search / SearchServiceImpl ─▶ rustie-leaf
+
+single- or multi-node Quickwit
+  pattern ─rustie-serve (gateway)─▶ gRPC root_search ─▶ rustie-node (searcher+metastore)
+                                                              │
+                                                              ├─ local leaf (rustie-leaf)
+                                                              └─ gRPC leaf_search ─▶ peer rustie-node
+```
+
+- **N = 1:** one `rustie-node` with empty `peer_seeds` is a valid cluster.
+- **Metastore:** Postgres is the default (`postgres://rustie:rustie@127.0.0.1:5433/rustie`).
+  Every `rustie-node` enables the metastore role and opens that URI directly. Existing
+  file/S3 metastores remain readable via `--metastore-uri s3://…` until deleted; switching
+  to Postgres means **re-indexing**, not migrating. Do not use a single-owner metastore proxy.
+- **Gateway SPOF:** phase 1 dials one `--searcher-endpoint`; leaf fan-out behind that node is
+  resilient. Multi-endpoint root failover is follow-up debt.
+- **Live `report_splits`:** `rustie-index --cluster-config configs/rustie-indexer.yaml` joins
+  the cluster as a gossip-only member, builds a `SearcherPool` from membership, and
+  subscribes `SearchJobPlacer` to the indexing `EventBroker`. The uploader's early
+  `ReportSplitsRequest` (Quickwit's intentional prefetch, before the object finishes uploading)
+  reaches each searcher's on-disk split cache via rendezvous-hash affinity. Nodes need
+  `searcher.split_cache` in their YAML or reports are dropped. The cache is best-effort: a
+  failed early download drops the candidate; search still reads object storage, and a later
+  query `touch` re-enqueues the split once the object exists. Embedded mode still uses
+  metastore listing (`report_splits_to_cache` / `--refresh-secs`).
+
+```
+  rustie-index (gossip-only) ──ReportSplitsRequest──▶ EventBroker ──▶ SearchJobPlacer
+                                                                        │ rendezvous hash
+                                                                        ▼
+                                                              rustie-node searcher-split-cache
+                                                              (miss → S3; touch re-enqueues)
+```
 
 ## What replaced what (RustIE → quick-rustie)
 
@@ -57,11 +99,19 @@ redirected to it, at a pinned commit, by the `[patch]` section of the root `Carg
 - **Filter in the scorer, not after the collector.** Counts, top-k and `search_after` stay exact,
   and non-matching documents are never fetched or shipped.
 - **Token positions come from postings; tag/entity/chunk come from GPH2.** Every token field is
-  one pipe-joined string tokenized by `pipe_tokens`, so a term's position is its token index.
+  one pipe-joined string tokenized by `rustie_tokens` (registered through the fork's tokenizer
+  hook), so a term's position is its token index. The tokenizer unescapes `|`, `,` and `\`, so
+  tokens containing them are indexed as themselves.
   Regex and fuzzy tests are expanded over the term dictionary (automaton when the pattern fits its
   dialect, full scan otherwise), re-checked with the exact matcher.
-- **Edge labels are indexed as a per-sentence label set** (`outgoing_edges` / `incoming_edges`):
-  only membership is useful for candidates; the graph itself is in GPH2.
+- **Edge labels are positional postings** (`outgoing_edges` / `incoming_edges`, tokenizer
+  `rustie_edges`): every label of a token sits at that token's position, several at one position
+  when a token has several edges; a root token also carries `root` in `incoming_edges`. The
+  compiler folds a graph endpoint's own tests and its adjacent hop's label into one `SameToken`
+  node, and the leaf keeps only candidates where one token satisfies all of them (union of a
+  regex's terms per test, intersection across tests) before any GPH2 block is read. A node whose
+  rarest test is too common is skipped (`RUSTIE_REFINE_MAX_DF_RATIO`); `RUSTIE_SAME_TOKEN_REFINE=0`
+  turns the step off. Splits indexed before this (edge fields without positions) skip it.
 - **The stored document keeps its tokens and graph JSON** so a page can be rendered without a
   second graph read. Only the returned page is rendered.
 - **Postings decide simple token patterns.** One token test (or alternatives) on a field needs no
@@ -78,7 +128,7 @@ redirected to it, at a pinned commit, by the `[patch]` section of the root `Carg
 - `rustie-graph-store`: round trips, spool = in-memory encoding, merge with deletes and missing
   components.
 - Fork: sidecar rows follow document ids through indexing, merge and delete-and-merge.
-- `rustie-leaf/tests/leaf_search.rs`: 20 token and graph patterns over three real splits vs the
+- `rustie-leaf/test/unit/leaf_search.rs`: 20 token and graph patterns over three real splits vs the
   reference evaluator, including exact `num_hits` and paging.
 - On the PubMed sample (127,052 sentences, 8 merged splits), results equal a Python oracle over
   the raw JSON for every page size.

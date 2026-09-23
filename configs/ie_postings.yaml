@@ -21,53 +21,53 @@ doc_mapping:
       fast: true
     - name: word
       type: text
-      tokenizer: pipe_tokens
+      tokenizer: rustie_tokens
       record: position
       stored: true
     - name: lemma
       type: text
-      tokenizer: pipe_tokens
+      tokenizer: rustie_tokens
       record: position
       stored: true
     - name: pos
       type: text
-      tokenizer: pipe_tokens
+      tokenizer: rustie_tokens
       record: position
       stored: true
     - name: tag
       type: text
-      tokenizer: pipe_tokens
+      tokenizer: rustie_tokens
       record: position
       stored: true
     - name: entity
       type: text
-      tokenizer: pipe_tokens
+      tokenizer: rustie_tokens
       record: position
       stored: true
     - name: chunk
       type: text
-      tokenizer: pipe_tokens
+      tokenizer: rustie_tokens
       record: position
       stored: true
     - name: norm
       type: text
-      tokenizer: pipe_tokens
+      tokenizer: rustie_tokens
       record: position
       stored: true
     - name: raw
       type: text
-      tokenizer: pipe_tokens
+      tokenizer: rustie_tokens
       record: position
       stored: true
     - name: outgoing_edges
       type: text
-      tokenizer: pipe_tokens
-      record: basic
+      tokenizer: rustie_edges
+      record: position
       stored: false
     - name: incoming_edges
       type: text
-      tokenizer: pipe_tokens
-      record: basic
+      tokenizer: rustie_edges
+      record: position
       stored: false
     - name: dependencies
       type: json
@@ -77,11 +77,6 @@ doc_mapping:
       type: json
       stored: true
       indexed: false
-  tokenizers:
-    - name: pipe_tokens
-      type: regex
-      pattern: "[^|]+"
-      filters: []
 
 indexing_settings:
   split_num_docs_target: 500000

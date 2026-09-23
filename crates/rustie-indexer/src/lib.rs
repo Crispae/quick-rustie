@@ -32,4 +32,7 @@ pub use index::{
     InvalidDocPolicy, StopHandle,
 };
 pub use minio::{MinioConfig, connect_minio, minio_storage_resolver, ping_minio};
-pub use store::{IndexSummary, index_summary, open_metastore};
+pub use store::{
+    DEFAULT_POSTGRES_METASTORE_URI, IndexSummary, index_summary, open_metastore,
+    published_report_splits,
+};

@@ -124,6 +124,13 @@ fn flatten_file(path: &Path) -> std::result::Result<Vec<JsonValue>, String> {
         std::fs::read_to_string(path).map_err(|err| err.to_string())?
     };
     let sentences = flatten_odinson_json(&json).map_err(|err| err.to_string())?;
+    // Last check before indexing: every token/edge vector must have exactly `sentence_length`
+    // slots, since `rustie_tokens`/`rustie_edges` assign each slot's Tantivy position by its
+    // index in the pipe-joined string (see `SentenceDoc::validate`). Treated like any other
+    // malformed input: this file is skipped and recorded, the rest of the batch keeps going.
+    for s in &sentences {
+        s.validate().map_err(|err| err.to_string())?;
+    }
     Ok(sentences.iter().map(|s| s.to_quickwit_json()).collect())
 }
 

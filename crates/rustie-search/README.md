@@ -44,7 +44,36 @@ failure, `504` timeout.
 
 Flags: `--bind` (default `127.0.0.1:8080`), `--index-id`, `--metastore-uri`, `--endpoint/--bucket/
 --access-key/--secret-key` (or `MINIO_*` env), `--max-limit`, `--timeout-secs`,
-`--max-concurrent-searches`, `--refresh-secs`.
+`--max-concurrent-searches`, `--refresh-secs`, **`--searcher-endpoint`** (optional gRPC addr of a
+`rustie-node`; when set, this process is a gateway and does not embed the leaf stack).
+
+## Topologies
+
+| Mode | How |
+| --- | --- |
+| **Embedded** (default) | No `--searcher-endpoint`. In-process one-node pool; call `rustie_leaf::register()` here. Laptop / MinIO smoke. |
+| **Single-node Quickwit** | Run [`rustie-node`](../rustie-node) with empty `peer_seeds` (searcher + metastore). Point `--searcher-endpoint` at its **gRPC** port. |
+| **Multi-node** | Several `rustie-node` processes, shared `cluster_id` + peer gossip. Gateway dials **one** searcher’s gRPC (root-entry SPOF for now; leaf fan-out behind that node is Quickwit’s). |
+
+Every `rustie-node` enables **metastore + searcher** and opens the shared Postgres (default) or
+file/S3 metastore URI directly (not upstream’s single-owner metastore proxy). Gateway still calls
+`open_metastore` itself for `GET /v1/index` (`summary()`); search goes over gRPC
+`SearchService::root_search` only.
+
+```bash
+# Terminal 1–2 — Quickwit searchers (see configs/rustie-node-1.yaml + rustie-node-2.yaml)
+cargo run --release -p rustie-node -- --config configs/rustie-node-1.yaml
+cargo run --release -p rustie-node -- --config configs/rustie-node-2.yaml
+
+# Terminal 3 — Odinson HTTP API as gateway (index id must match the metastore)
+cargo run --release -p rustie-search --bin rustie-serve -- \
+  --index-id pubmed-slots \
+  --metastore-uri 'postgres://rustie:rustie@127.0.0.1:5433/rustie' \
+  --searcher-endpoint 127.0.0.1:7281
+```
+
+End-to-end multi-node steps and design diagram: root [`README.md`](../../README.md).
+
 
 ## Library
 
@@ -64,7 +93,9 @@ let results = searcher.search(SearchQuery::new("[word=John] >nsubj [pos=VBZ]").l
   130 bytes per sentence (≈ 700 MB for 5M sentences): size the cache to hold it, or every graph
   query with many candidates re-reads it from storage.
 - **No authentication or TLS.** It binds to loopback by default; put a proxy in front to expose it.
-- **Freshness.** The file-backed metastore does not poll; `--refresh-secs` (default 30) re-opens it.
+- **Freshness.** Postgres reflects new splits without refresh. File-backed (`s3://`) metastores
+  do not poll; `--refresh-secs` (default 30) re-opens them (and re-reports into an embedded
+  split cache when configured).
 - **Old splits.** Splits indexed before the graph component existed match no graph pattern:
   re-index them (`rustie-index --overwrite`).
 

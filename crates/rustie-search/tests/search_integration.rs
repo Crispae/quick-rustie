@@ -339,3 +339,71 @@ async fn split_cache_directory_is_populated() {
         "split cache directory must hold at least one file after a query"
     );
 }
+
+/// Gateway mode: same MinIO index as embedded, but `root_search` goes to a remote `rustie-node`
+/// gRPC (`RUSTIE_SEARCHER_ENDPOINT`, default `127.0.0.1:7281`).
+///
+/// Prerequisites:
+/// 1. MinIO up; `RUSTIE_MINIO_TEST=1`
+/// 2. A `rustie-node` already running against the same bucket (see `configs/rustie-node.yaml`),
+///    with `rustie_leaf::register()` installed — start it before this test.
+///
+/// Compares embedded vs gateway hit sets for one pattern (node×1 + gateway). Multi-node
+/// (node×2) is the same gateway client pointed at either peer; leaf fan-out is inside Quickwit.
+///
+/// ```bash
+/// # terminal 1
+/// cargo run --release -p rustie-node -- --config configs/rustie-node.yaml
+/// # terminal 2
+/// RUSTIE_MINIO_TEST=1 cargo test -p rustie-search --test search_integration \
+///   gateway_matches_embedded -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "needs MinIO + running rustie-node; set RUSTIE_MINIO_TEST=1"]
+async fn gateway_matches_embedded() {
+    if std::env::var("RUSTIE_MINIO_TEST").as_deref() != Ok("1") {
+        eprintln!("RUSTIE_MINIO_TEST!=1, skipping");
+        return;
+    }
+    let endpoint: std::net::SocketAddr = std::env::var("RUSTIE_SEARCHER_ENDPOINT")
+        .unwrap_or_else(|_| "127.0.0.1:7281".into())
+        .parse()
+        .expect("RUSTIE_SEARCHER_ENDPOINT must be host:port");
+
+    let minio = MinioConfig::from_env();
+    // Use the shared default index the local rustie-node is expected to see (already indexed
+    // via rustie-index). If the index is empty, the test still checks that both backends agree.
+    let mut embedded_opts = SearcherOptions::for_bucket(&minio.bucket);
+    let mut gateway_opts = embedded_opts.clone();
+    gateway_opts.searcher_endpoint = Some(endpoint);
+
+    let embedded = Searcher::connect(minio.clone(), embedded_opts)
+        .await
+        .expect("embedded connect");
+    assert!(!embedded.is_gateway());
+
+    let gateway = Searcher::connect(minio, gateway_opts)
+        .await
+        .expect("gateway connect");
+    assert!(gateway.is_gateway());
+
+    // summary() uses the local metastore in both modes.
+    let _ = embedded.summary().await;
+    let _ = gateway.summary().await;
+
+    let pattern = "[word=John] >nsubj [pos=VBZ]";
+    let emb = embedded
+        .search(SearchQuery::new(pattern).count(true).limit(20))
+        .await
+        .expect("embedded search");
+    let gw = gateway
+        .search(SearchQuery::new(pattern).count(true).limit(20))
+        .await
+        .expect("gateway search");
+
+    let emb_ids: Vec<_> = emb.hits.iter().map(|h| h.sentence_id.clone()).collect();
+    let gw_ids: Vec<_> = gw.hits.iter().map(|h| h.sentence_id.clone()).collect();
+    assert_eq!(emb_ids, gw_ids, "hit order/ids must match");
+    assert_eq!(emb.total_hits, gw.total_hits);
+    assert_eq!(emb.kind, gw.kind);
+}

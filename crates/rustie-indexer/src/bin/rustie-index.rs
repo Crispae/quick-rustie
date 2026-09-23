@@ -53,13 +53,19 @@ struct Args {
     #[arg(long, default_value = "ie-postings")]
     index_id: String,
 
-    /// Metastore URI. Default: `s3://<bucket>/metastore`.
-    #[arg(long)]
+    /// Metastore URI. Default: `RUSTIE_METASTORE_URI`, else
+    /// `postgres://rustie:rustie@127.0.0.1:5433/rustie`.
+    #[arg(long, env = "RUSTIE_METASTORE_URI")]
     metastore_uri: Option<String>,
 
     /// Index root URI. Default: `s3://<bucket>/indexes`.
     #[arg(long)]
     index_root_uri: Option<String>,
+
+    /// Quickwit node config to join the real cluster as a gossip-only member (live split-cache
+    /// reports). When omitted, the indexer keeps a private in-memory cluster.
+    #[arg(long, env = "RUSTIE_CLUSTER_CONFIG")]
+    cluster_config: Option<PathBuf>,
 
     /// Scratch directory for split building. Default: a temporary directory.
     #[arg(long)]
@@ -147,6 +153,7 @@ async fn run(args: Args) -> anyhow::Result<ExitCode> {
     let mut options = IndexerOptions::for_bucket(&minio.bucket);
     options.index_id = args.index_id;
     options.data_dir = args.data_dir;
+    options.cluster_config = args.cluster_config;
     options.split_num_docs_target = args.split_num_docs_target;
     options.threads = args.threads;
     options.pipelines = args.pipelines;

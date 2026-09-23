@@ -5,6 +5,10 @@
 //! only matching sentences are counted, ranked and fetched. The page's matched spans and named
 //! captures are then rendered from the stored sentences.
 //!
+//! By default the search stack is **embedded** in-process. Pass
+//! [`SearcherOptions::searcher_endpoint`] to dial a remote `rustie-node` over gRPC
+//! `root_search` (gateway mode).
+//!
 //! ```no_run
 //! # async fn demo() -> rustie_search::Result<()> {
 //! use rustie_search::{MinioConfig, SearchQuery, Searcher, SearcherOptions};

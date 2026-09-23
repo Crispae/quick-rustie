@@ -2,10 +2,18 @@
 //!
 //! Per split, the extension warmup (asynchronous, after Quickwit's own warmup):
 //! 1. evaluates the compiler's candidate filter on postings;
-//! 2. for a graph pattern, opens the split's GPH2 file and binds the plan to its dictionaries;
+//! 2. for a graph pattern, opens the split's GPH2 file and binds the plan to its dictionaries,
+//!    and keeps only candidates where one token satisfies each top-level `SameToken` node (an
+//!    endpoint's tests plus its hop label), on postings positions (`refine_same_token`);
 //! 3. expands every token test answered by postings to its terms, warming their positions;
 //! 4. fetches the sentence lengths (token patterns) or the graph blocks holding the candidates
-//!    (graph patterns).
+//!    (graph patterns), concurrently with step 3.
+//!
+//! Steps 1-3 all resolve `(field, test)` pairs against the term dictionary through one
+//! `SegmentTerms` per segment (`crate::expand`): the same endpoint constraint is often both a
+//! `SameToken` child (step 2) and an `ExternalLeaf` (step 3), and resolving it once instead of
+//! twice matters most for a regex with no fixed prefix, which the dictionary can only answer by
+//! a full scan.
 //!
 //! The scorer (synchronous, on that local data) then walks the candidates and yields only the
 //! documents the pattern matches exactly. When the postings already decide the match (one token
@@ -28,7 +36,6 @@ use rustie_compiler::{
 use rustie_graph_store::reader::Gph2Block;
 use rustie_graph_store::{BLOCK_DOCS, SentenceScratch};
 use serde_json::Value as JsonValue;
-use tracing::debug;
 use tantivy::columnar::Column;
 use tantivy::directory::Directory;
 use tantivy::index::SegmentId;
@@ -36,10 +43,11 @@ use tantivy::postings::{Postings, SegmentPostings};
 use tantivy::query::{EnableScoring, Explanation, Query, Scorer, Weight};
 use tantivy::schema::{IndexRecordOption, Schema};
 use tantivy::{DocId, DocSet, Score, Searcher, SegmentReader, TERMINATED, Term};
+use tracing::debug;
 
 use crate::blocks::SplitGraph;
-use crate::candidates::candidate_docs;
-use crate::expand::expand_terms;
+use crate::candidates::{candidate_docs, refine_same_token};
+use crate::expand::SegmentTerms;
 
 /// Field holding each sentence's token count (a fast field in the IE mapping).
 const SENTENCE_LENGTH_FIELD: &str = "sentence_length";
@@ -169,23 +177,36 @@ impl QueryExtension for RustieQueryExtension {
 }
 
 /// Terms every match contains: the top-level conjuncts of the candidate filter that are single
-/// terms. Quickwit skips a split outright when one of them is absent.
+/// terms, including the `Term` children of a top-level `SameToken` and every term of a top-level
+/// `Phrase`. Quickwit skips a split outright when one of them is absent.
+///
+/// A `SameToken`'s children are required because the compiler only builds one from a
+/// mandatory single-token graph endpoint (see `GraphCompiler::endpoint_candidate`); nothing
+/// under an `Or` is ever collected.
 fn required_terms(filter: &CandidateFilter, schema: &Schema) -> Vec<Term> {
-    let conjuncts: Vec<&CandidateFilter> = match filter {
+    let top: Vec<&CandidateFilter> = match filter {
         CandidateFilter::And(parts) => parts.iter().collect(),
         other => vec![other],
     };
+    let conjuncts = top.into_iter().flat_map(|part| match part {
+        CandidateFilter::SameToken(children) => children.iter().collect(),
+        other => vec![other],
+    });
+    let term = |field: &str, value: &str| {
+        let field = schema.get_field(field).ok()?;
+        schema
+            .get_field_entry(field)
+            .is_indexed()
+            .then(|| Term::from_field_text(field, value))
+    };
     conjuncts
-        .into_iter()
-        .filter_map(|part| match part {
-            CandidateFilter::Term { field, value } => {
-                let field = schema.get_field(field).ok()?;
-                schema
-                    .get_field_entry(field)
-                    .is_indexed()
-                    .then(|| Term::from_field_text(field, value))
-            }
-            _ => None,
+        .flat_map(|part| match part {
+            CandidateFilter::Term { field, value } => term(field, value).into_iter().collect(),
+            CandidateFilter::Phrase { field, terms } => terms
+                .iter()
+                .filter_map(|value| term(field, value))
+                .collect(),
+            _ => Vec::new(),
         })
         .collect()
 }
@@ -245,14 +266,25 @@ impl RustieWarmup {
         graph: Option<&SplitGraph>,
     ) -> anyhow::Result<SegmentPlan> {
         let started = Instant::now();
-        let candidates = candidate_docs(self.compiled.candidate(), reader, &self.schema)
-            .await?
-            .docs();
+        // Shared for the life of this segment's warmup: a `(field, test)` pair resolved for the
+        // candidate filter, refinement or an external leaf is resolved once and reused by
+        // whichever of the other two also needs it (the same endpoint constraint commonly feeds
+        // both a `SameToken` child and an `ExternalLeaf`).
+        let segment_terms = SegmentTerms::new(reader);
+        let candidates_before_refine = candidate_docs(
+            self.compiled.candidate(),
+            &segment_terms,
+            reader,
+            &self.schema,
+        )
+        .await?
+        .docs();
+        let candidates_before = candidates_before_refine.len();
         let candidates_took = started.elapsed();
         if self.compiled.exact {
             // Neither positions nor sentence lengths are read.
             return Ok(SegmentPlan {
-                candidates,
+                candidates: candidates_before_refine,
                 leaf_terms: Vec::new(),
                 graph: None,
             });
@@ -280,6 +312,22 @@ impl RustieWarmup {
                 (plan.external_leaves().to_vec(), Some(plan))
             }
         };
+        // Graph patterns only: narrow the candidates to those where one token actually satisfies
+        // a `SameToken` node, directly on postings positions — before any GPH2 block is fetched.
+        // Surface patterns read no blocks, so there is nothing for this to save there.
+        let candidates = if graph_segment.is_some() && *same_token_refine_enabled() {
+            refine_same_token(
+                self.compiled.candidate(),
+                &segment_terms,
+                reader,
+                &self.schema,
+                candidates_before_refine,
+            )
+            .await?
+        } else {
+            candidates_before_refine
+        };
+        let refine_took = started.elapsed() - candidates_took;
         if candidates.is_empty() {
             return Ok(SegmentPlan {
                 candidates,
@@ -288,36 +336,55 @@ impl RustieWarmup {
             });
         }
 
-        let mut leaf_terms = Vec::with_capacity(leaves.len());
-        for leaf in &leaves {
-            let terms = match self.schema.get_field(&leaf.field) {
-                Ok(field) if self.schema.get_field_entry(field).is_indexed() => {
-                    let inverted_index = reader.inverted_index(field)?;
-                    expand_terms(&inverted_index, field, &leaf.test, true).await?
-                }
-                _ => Vec::new(),
-            };
-            leaf_terms.push(terms);
-        }
-
-        let leaves_took = started.elapsed() - candidates_took;
-        let graph = match (graph_segment, graph) {
-            (Some(plan), Some(graph)) => Some(GraphSegment {
-                plan,
-                blocks: graph.blocks_for_docs(&candidates).await?,
-            }),
-            _ => {
-                // Token patterns need each sentence's length.
-                warm_fast_field(reader, SENTENCE_LENGTH_FIELD).await?;
-                None
-            }
+        // The leaves' positions and the graph blocks (or sentence lengths) are independent
+        // reads: issue them together, and each leaf's concurrently with the others.
+        let leaf_terms = async {
+            let started = Instant::now();
+            let terms = futures::future::try_join_all(leaves.iter().map(|leaf| async {
+                anyhow::Ok(match self.schema.get_field(&leaf.field) {
+                    Ok(field) if self.schema.get_field_entry(field).is_indexed() => {
+                        let resolved = segment_terms.resolve(field, &leaf.test).await?;
+                        segment_terms.warm_positions(field, &resolved).await?;
+                        resolved.terms().cloned().collect()
+                    }
+                    _ => Vec::new(),
+                })
+            }))
+            .await?;
+            anyhow::Ok((terms, started.elapsed()))
         };
+        let graph_data = async {
+            let started = Instant::now();
+            let segment = match (graph_segment, graph) {
+                (Some(plan), Some(graph)) => {
+                    let blocks = graph.blocks_for_docs(&candidates).await?;
+                    Some(GraphSegment { plan, blocks })
+                }
+                _ => {
+                    // Token patterns need each sentence's length.
+                    warm_fast_field(reader, SENTENCE_LENGTH_FIELD).await?;
+                    None
+                }
+            };
+            anyhow::Ok((segment, started.elapsed()))
+        };
+        let ((leaf_terms, leaves_took), (graph, graph_took)) =
+            futures::future::try_join(leaf_terms, graph_data).await?;
+        let blocks_fetched = graph.as_ref().map_or(0, |g| g.blocks.len());
+        let (terms_resolved, range_reads) = segment_terms.stats();
         debug!(
             segment = %reader.segment_id().short_uuid_string(),
-            candidates = candidates.len(),
+            candidates_before,
+            candidates_after = candidates.len(),
+            blocks = blocks_fetched,
+            terms_resolved,
+            range_reads,
             candidates_ms = candidates_took.as_millis() as u64,
+            refine_ms = refine_took.as_millis() as u64,
+            // `leaves_ms` and `graph_ms` overlap (issued together); `total_ms` is wall time.
             leaves_ms = leaves_took.as_millis() as u64,
-            graph_ms = (started.elapsed() - candidates_took - leaves_took).as_millis() as u64,
+            graph_ms = graph_took.as_millis() as u64,
+            total_ms = started.elapsed().as_millis() as u64,
             "rustie segment warmed"
         );
         Ok(SegmentPlan {
@@ -326,6 +393,36 @@ impl RustieWarmup {
             graph,
         })
     }
+}
+
+/// `RUSTIE_SAME_TOKEN_REFINE=0` disables [`refine_same_token`] entirely (A/B against the
+/// document-level candidate set alone). Any other value, or unset, leaves it on.
+fn same_token_refine_enabled() -> &'static bool {
+    static ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var("RUSTIE_SAME_TOKEN_REFINE")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    });
+    match REFINE_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => &true,
+        2 => &false,
+        _ => &ENABLED,
+    }
+}
+
+/// 0 = follow `RUSTIE_SAME_TOKEN_REFINE`, 1 = force on, 2 = force off.
+static REFINE_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Test hook: force same-token refinement on or off (`None` = back to the environment), so one
+/// test process can compare both without racing on a process-wide environment variable.
+#[doc(hidden)]
+pub fn set_same_token_refine(enabled: Option<bool>) {
+    let value = match enabled {
+        None => 0,
+        Some(true) => 1,
+        Some(false) => 2,
+    };
+    REFINE_OVERRIDE.store(value, std::sync::atomic::Ordering::Relaxed);
 }
 
 async fn warm_fast_field(reader: &SegmentReader, name: &str) -> anyhow::Result<()> {
@@ -536,3 +633,7 @@ impl Scorer for RustieScorer {
         1.0
     }
 }
+
+#[cfg(test)]
+#[path = "../test/unit/query.rs"]
+mod tests;
