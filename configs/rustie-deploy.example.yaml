@@ -1,0 +1,84 @@
+# rustie deployment file — ONE file for every node and for rustie-serve.
+#
+#   cp configs/rustie-deploy.example.yaml configs/rustie-deploy.yaml   # (gitignored)
+#   export S3_ACCESS_KEY=... S3_SECRET_KEY=... PG_PASSWORD=...
+#
+#   # 1. check it (static checks + live checks against S3, metastore, index, Cachey):
+#   rustie-node  --deploy-config configs/rustie-deploy.yaml --check
+#   # 2. start each node (on its own machine, or several on one host with distinct ports):
+#   rustie-node  --deploy-config configs/rustie-deploy.yaml --node-id rustie-node-1
+#   rustie-node  --deploy-config configs/rustie-deploy.yaml --node-id rustie-node-2
+#   # 3. start the HTTP API (gateway to the cluster when serve.gateway_node is set):
+#   rustie-serve --deploy-config configs/rustie-deploy.yaml
+#
+# Every value below is validated at startup. Problems are printed with what to provide;
+# errors stop the process, warnings do not. Any string may reference an environment variable
+# as ${NAME} — do that for secrets so this file can be committed.
+# Unknown keys are rejected (typos would otherwise silently use defaults).
+
+version: 1                      # required; must be 1
+cluster_id: rustie-cluster      # required; the same for every node
+
+# ---------------------------------------------------------------- object storage (S3 API)
+storage:
+  endpoint: https://eu2.contabostorage.com/     # required off-AWS, e.g. your provider's S3 URL.
+                                           # Leave empty only for real AWS S3 (rustie-serve
+                                           # always needs it).
+  region: EU                     # required; the region your provider signs with
+  bucket: rustie                         # required; holds the index splits
+  access_key_id: ${S3_ACCESS_KEY}          # required; prefer an env reference
+  secret_access_key: ${S3_SECRET_KEY}      # required; prefer an env reference
+  path_style: true                         # off-AWS providers (Contabo, MinIO, ...) need true;
+                                           # Cachey requires it too
+  # checksum: md5                          # crc32c | md5 | disabled. Default: md5 off-AWS
+
+# ---------------------------------------------------------------- what to search
+index:
+  id: wiki5k-contabo                         # required; e.g. wiki5k
+  # root_uri: s3://<bucket>/indexes        # default: s3://<bucket>/indexes
+
+# Where index metadata lives. Postgres is required for multi-node; every node and
+# rustie-serve must be able to reach it (not localhost when nodes are on different machines).
+metastore_uri: postgres://<user>:${PG_PASSWORD}@<host>:5432/<db>
+
+# ---------------------------------------------------------------- caching (pick ONE disk layer)
+# Cachey: a shared read-through cache in front of S3 (16 MiB pages, memory + disk). Best with
+# several or short-lived searchers. Run it with the SAME endpoint/bucket/credentials:
+#   AWS_ENDPOINT_URL=<storage.endpoint> AWS_REGION=<storage.region> AWS_ACCESS_KEY_ID=... \
+#   AWS_SECRET_ACCESS_KEY=... cachey --port 9020 --disk-path /cache
+# Cachey nodes may only run the searcher / metastore roles.
+cachey:
+  enabled: false
+  url: http://<cachey-host>:9020           # required when enabled; reachable from every node
+  # c0_config: "oat=1500 ma=3"             # extra per-request S3 overrides
+  fallback: true                           # read S3 directly if Cachey fails
+
+# Split cache: whole splits on each searcher's local disk. Best for one searcher whose disk
+# holds the corpus. Do not enable together with Cachey.
+split_cache:
+  enabled: false
+  max_gb: 10
+  max_splits: 10000
+  # dir: /var/lib/rustie/split-cache       # rustie-serve embedded mode only
+
+# ---------------------------------------------------------------- nodes
+# One entry per rustie-node process. `host` is the address peers and rustie-serve use to reach
+# it: use a LAN/public IP or DNS name (NOT 127.0.0.1) when nodes run on different machines.
+# Nodes sharing a machine need distinct ports. Roles default to [searcher, metastore].
+nodes:
+  - node_id: rustie-node-1
+    host: <node-1-address>
+    data_dir: /var/lib/rustie/rustie-node-1
+    # listen_address: 0.0.0.0                # bind address; default: host. Use 0.0.0.0 in Docker
+    # rest_port: 7280
+    # grpc_port: 7281                        # rustie-serve dials this one
+    # gossip_port: 7282
+  - node_id: rustie-node-2
+    host: <node-2-address>
+    data_dir: /var/lib/rustie/rustie-node-2
+
+# ---------------------------------------------------------------- rustie-serve (HTTP API)
+serve:
+  bind: 127.0.0.1:8080                     # the API has no authentication
+  gateway_node: rustie-node-1              # node_id to dial; unset = search embedded
+                                           # (one gateway node is a SPOF for root entry)

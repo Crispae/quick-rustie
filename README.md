@@ -12,6 +12,7 @@ Depends on [quickwit-oss/quickwit](https://github.com/quickwit-oss/quickwit) `v0
 | **`rustie-schema`** (`crates/rustie-schema`) | Odinson → sentence docs (tokens + graphs) + Quickwit mapping |
 | **`rustie-search`** (`crates/rustie-search`) | Run RustIE patterns against the index: `Searcher` library + `rustie-serve` HTTP API (embedded or gateway) |
 | **`rustie-node`** (`crates/rustie-node`) | Quickwit node with `rustie-leaf` registered (`serve_quickwit`; searcher + metastore) |
+| **`rustie-cachey`** (`crates/rustie-cachey`) | Optional Cachey read-through wrapper for S3 `.split` `get_slice` (searchers only) |
 | **`rustie-leaf`** (`crates/rustie-leaf`) | RustIE inside Quickwit leaf search: GPH2 split component + `rustie` query extension |
 | **`rustie-graph-store`** (`crates/rustie-graph-store`) | GPH2 graph file: blocks, range reads, streaming writer, merge |
 | `quickwit-indexing` | Indexing pipeline |
@@ -34,6 +35,28 @@ let sentences = flatten_odinson_json(odinson_json)?;
 
 Postings index config: `configs/ie_postings.yaml` (also via `postings_index_config_yaml`).
 
+## Deployment config (multi-node)
+
+One YAML file describes the whole deployment: S3 endpoint/region/bucket/keys, index id,
+Postgres metastore, Cachey or split cache, every node, and `rustie-serve`. Start from
+[`configs/rustie-deploy.example.yaml`](configs/rustie-deploy.example.yaml) (copy it to
+`configs/rustie-deploy.yaml`, which is gitignored) and reference secrets as `${ENV_VAR}`.
+
+```bash
+export S3_ACCESS_KEY=... S3_SECRET_KEY=... PG_PASSWORD=...
+rustie-node  --deploy-config configs/rustie-deploy.yaml --check                  # validate
+rustie-node  --deploy-config configs/rustie-deploy.yaml --node-id rustie-node-1  # run a node
+rustie-serve --deploy-config configs/rustie-deploy.yaml                          # HTTP API
+```
+
+Every start validates the file: **errors stop the process and each one says what to provide**
+(missing/placeholder values, unset env vars, loopback hosts across machines, port clashes,
+Cachey with an indexer role, ...); warnings (literal secrets, missing `path_style` off-AWS,
+Cachey together with the split cache) are printed and startup continues.
+`rustie-node --check` additionally talks to the real services (bucket, metastore, index and
+split count, Cachey `/stats` + a footer-byte comparison against direct S3) without starting a node.
+`rustie-serve --check` runs the static checks only.
+
 ## Local MinIO
 
 This machine already has **`rustie-minio`** healthy on:
@@ -51,10 +74,20 @@ This machine already has **`rustie-minio`** healthy on:
 # start MinIO if needed
 docker compose -f docker-compose.minio.yml up -d
 
+# optional: shared Cachey in front of MinIO (searchers: --cachey-url http://127.0.0.1:9020)
+docker compose -f docker-compose.minio.yml up -d cachey
+
 # put/get smoke test via Quickwit storage
 export PROTOC=/path/to/protoc   # if not on PATH
 cargo run --example minio_ping
 ```
+
+**Cachey vs on-disk split cache:** use `--split-cache-dir` for a single searcher with enough
+local disk; use `--cachey-url` when several searchers should share page-grained caching (or the
+corpus is larger than one machine’s disk). Cachey’s `AWS_ENDPOINT_URL` must match rustie’s MinIO/S3
+endpoint (compose uses `http://rustie-minio:9000` inside the network). See
+[`crates/rustie-search/README.md`](crates/rustie-search/README.md) and
+[`crates/rustie-node/README.md`](crates/rustie-node/README.md).
 
 In code:
 

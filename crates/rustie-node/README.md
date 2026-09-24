@@ -21,6 +21,9 @@ not the Odinson HTTP API (`rustie-serve` is the gateway / embedded laptop search
   or file/S3 metastore URI directly (no single-owner metastore proxy).
 - Enable `searcher.split_cache` so live `ReportSplitsRequest`s from
   `rustie-index --cluster-config` fill the on-disk split cache.
+- **Or** pass `--cachey-url http://127.0.0.1:9020` for a shared Cachey page cache (searcher /
+  metastore / metastore-read-replica only — the process refuses to start if indexer/janitor/etc.
+  are enabled). Do not combine with `searcher.split_cache` unless you accept the warning.
 - Indexing remains batch `rustie-index` (optionally gossip-joined); do not enable `indexer` on
   this node unless you intentionally want Quickwit’s control-plane scheduling.
 

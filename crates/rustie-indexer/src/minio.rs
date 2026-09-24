@@ -29,6 +29,9 @@ pub struct MinioConfig {
     pub secret_key: String,
     /// Object-key prefix inside the bucket (no leading slash), e.g. `indexes/demo`.
     pub prefix: String,
+    /// Signing region. `None`: the MinIO flavor's default (`minio`). Set it for real
+    /// S3-compatible providers (`MINIO_REGION` in [`MinioConfig::from_env`]).
+    pub region: Option<String>,
 }
 
 // Manual impl so the secret key never lands in logs or panic messages.
@@ -40,6 +43,7 @@ impl std::fmt::Debug for MinioConfig {
             .field("access_key", &self.access_key)
             .field("secret_key", &"<redacted>")
             .field("prefix", &self.prefix)
+            .field("region", &self.region)
             .finish()
     }
 }
@@ -65,6 +69,7 @@ impl MinioConfig {
                 .or_else(|_| std::env::var("AWS_SECRET_ACCESS_KEY"))
                 .unwrap_or_else(|_| "minioadmin".to_string()),
             prefix: std::env::var("MINIO_PREFIX").unwrap_or_else(|_| "quick-rustie".to_string()),
+            region: std::env::var("MINIO_REGION").ok().filter(|r| !r.is_empty()),
         }
     }
 
@@ -90,7 +95,12 @@ impl MinioConfig {
             ..Default::default()
         })]);
         configs.apply_flavors();
-        configs.find_s3().cloned().expect("S3 config just inserted")
+        let mut s3 = configs.find_s3().cloned().expect("S3 config just inserted");
+        // The MinIO flavor forces region `minio`; a real provider needs its own region.
+        if let Some(region) = &self.region {
+            s3.region = Some(region.clone());
+        }
+        s3
     }
 }
 
@@ -154,6 +164,7 @@ mod tests {
             access_key: "minioadmin".into(),
             secret_key: "s3cr3t-value".into(),
             prefix: "quick-rustie".into(),
+            region: None,
         };
         assert!(
             !format!("{cfg:?}").contains("s3cr3t-value"),

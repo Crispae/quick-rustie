@@ -77,6 +77,13 @@ enum Cmd {
         /// subject only to in-memory caches — that is the storage cost we want to see).
         #[arg(long)]
         split_cache_dir: Option<PathBuf>,
+        /// Cachey base URL for `.split` range reads (alternative to `--split-cache-dir`).
+        #[arg(long, env = "RUSTIE_CACHEY_URL")]
+        cachey_url: Option<String>,
+        #[arg(long)]
+        cachey_c0_config: Option<String>,
+        #[arg(long, default_value_t = false)]
+        no_cachey_fallback: bool,
         #[arg(long)]
         out: PathBuf,
         #[arg(long, env = "MINIO_ENDPOINT", default_value = "http://127.0.0.1:9010")]
@@ -164,6 +171,9 @@ async fn async_main() -> anyhow::Result<()> {
             queries,
             reps,
             split_cache_dir,
+            cachey_url,
+            cachey_c0_config,
+            no_cachey_fallback,
             out,
             endpoint,
             bucket,
@@ -176,6 +186,9 @@ async fn async_main() -> anyhow::Result<()> {
                 queries,
                 reps,
                 split_cache_dir,
+                cachey_url,
+                cachey_c0_config,
+                no_cachey_fallback,
                 out,
                 endpoint,
                 bucket,
@@ -188,6 +201,7 @@ async fn async_main() -> anyhow::Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_index(
     data: PathBuf,
     index_id: String,
@@ -207,6 +221,7 @@ async fn run_index(
         access_key,
         secret_key,
         prefix: String::new(),
+        region: None,
     };
     let mut options = IndexerOptions::for_bucket(&bucket);
     options.index_id = index_id.clone();
@@ -261,11 +276,15 @@ async fn run_index(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_search(
     index_id: String,
     queries: PathBuf,
     reps: usize,
     split_cache_dir: Option<PathBuf>,
+    cachey_url: Option<String>,
+    cachey_c0_config: Option<String>,
+    no_cachey_fallback: bool,
     out: PathBuf,
     endpoint: String,
     bucket: String,
@@ -279,6 +298,7 @@ async fn run_search(
         access_key,
         secret_key,
         prefix: String::new(),
+        region: None,
     };
     let mut options = SearcherOptions::for_bucket(&bucket);
     options.index_id = index_id;
@@ -289,7 +309,14 @@ async fn run_search(
     if let Some(dir) = split_cache_dir {
         options = options.with_split_cache(dir, 10_000, 10_000)?;
     }
+    if let Some(url) = cachey_url {
+        let mut cfg = rustie_cachey::CacheyConfig::new(url.parse()?);
+        cfg.c0_config = cachey_c0_config;
+        cfg.fallback = !no_cachey_fallback;
+        options.cachey = Some(cfg);
+    }
 
+    let stats_before = rustie_cachey::global_stats().snapshot();
     let load = Instant::now();
     let searcher = Searcher::connect(minio, options).await?;
     let load_ns = load.elapsed().as_nanos() as u64;
@@ -332,6 +359,21 @@ async fn run_search(
         }
         eprintln!("[rustie] search {name} x{reps} done");
     }
+
+    let stats_delta = rustie_cachey::global_stats()
+        .snapshot()
+        .since(&stats_before);
+    eprintln!(
+        "[rustie] cachey stats: requests={} bytes={} hits={} misses={} transport_fallbacks={} shed_fallbacks={} misconfig={} errors={}",
+        stats_delta.requests,
+        stats_delta.bytes,
+        stats_delta.first_page_hits,
+        stats_delta.first_page_misses,
+        stats_delta.transport_fallbacks,
+        stats_delta.shed_fallbacks,
+        stats_delta.misconfig,
+        stats_delta.errors,
+    );
 
     write_tsv(&out, &rows)?;
     eprintln!("[rustie] wrote {}", out.display());

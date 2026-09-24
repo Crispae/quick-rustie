@@ -19,11 +19,12 @@ use std::time::{Duration, Instant};
 
 use bytesize::ByteSize;
 use quickwit_config::{CacheConfig, SearcherConfig, SplitCacheLimits};
-use quickwit_proto::metastore::MetastoreServiceClient;
+use quickwit_metastore::IndexMetadataResponseExt;
+use quickwit_proto::metastore::{IndexMetadataRequest, MetastoreService, MetastoreServiceClient};
 use quickwit_proto::search::{CountHits, PartialHit, SearchRequest, SearchResponse};
 use quickwit_search::{
     ClusterClient, SearchJobPlacer, SearchServiceClient, SearchServiceImpl, SearcherContext,
-    SearcherPool, create_search_client_from_grpc_addr, root_search,
+    SearcherPool, create_search_client_from_channel, root_search,
 };
 use quickwit_storage::{SearchSplitCache, StorageResolver};
 use rustie_compiler::{CompiledQuery, QueryCompiler};
@@ -77,6 +78,10 @@ pub struct SearcherOptions {
     /// re-fetches split data from object storage, subject only to the in-memory caches above.
     /// Embedded mode only.
     pub split_cache_limits: Option<SplitCacheLimits>,
+
+    /// When set, embedded-mode S3 `.split` `get_slice` reads go through Cachey.
+    /// Ignored in gateway mode. Alternative to the on-disk split cache (warn if both set).
+    pub cachey: Option<rustie_cachey::CacheyConfig>,
 }
 
 impl SearcherOptions {
@@ -95,6 +100,7 @@ impl SearcherOptions {
             predicate_cache_mb: 256,
             split_cache_dir: None,
             split_cache_limits: None,
+            cachey: None,
         }
     }
 
@@ -199,6 +205,77 @@ async fn report_splits_to_cache(
     }
 }
 
+/// `/stats` + footer-byte probe against a published split.
+///
+/// Splits live under the *index's own* `index_uri` (e.g. `s3://bucket/indexes/<id>`), not the
+/// bucket root, so the probe resolves storage from the metastore's index metadata. If no probe
+/// can be built the check degrades to `/stats` only, with a warning (never silently).
+async fn run_cachey_startup_check(
+    cfg: &rustie_cachey::CacheyConfig,
+    base_resolver: &StorageResolver,
+    minio: &MinioConfig,
+    metastore: &MetastoreServiceClient,
+    index_id: &str,
+) -> anyhow::Result<()> {
+    let s3 = minio.s3_storage_config();
+    let index_uri = match metastore
+        .index_metadata(IndexMetadataRequest::for_index_id(index_id.to_string()))
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|r| r.deserialize_index_metadata().map_err(anyhow::Error::from))
+    {
+        Ok(metadata) => metadata.index_uri().clone(),
+        Err(err) => {
+            warn!(%err, index_id, "cachey footer probe skipped: cannot read index metadata");
+            return rustie_cachey::check(cfg, &s3, &minio.index_uri()?, base_resolver.resolve(&minio.index_uri()?).await?, None).await;
+        }
+    };
+    let direct = base_resolver.resolve(&index_uri).await?;
+
+    let probe = match published_report_splits(metastore, index_id).await {
+        Ok(splits) if !splits.is_empty() => {
+            let path = std::path::PathBuf::from(format!("{}.split", splits[0].split_id));
+            match direct.file_num_bytes(&path).await {
+                Ok(len) if len > 0 => {
+                    let end = len as usize;
+                    Some((path, end.saturating_sub(64 * 1024)..end))
+                }
+                other => {
+                    warn!(?other, split = %path.display(), "cachey footer probe skipped: cannot size split");
+                    None
+                }
+            }
+        }
+        Ok(_) => {
+            warn!(index_id, "cachey footer probe skipped: index has no published splits");
+            None
+        }
+        Err(err) => {
+            warn!(%err, "cachey footer probe skipped: cannot list splits");
+            None
+        }
+    };
+    let probe_ref = probe.as_ref().map(|(p, r)| (p.as_path(), r.clone()));
+    rustie_cachey::check(cfg, &s3, &index_uri, direct, probe_ref).await
+}
+
+/// gRPC client for gateway mode. Quickwit's `create_search_client_from_grpc_addr` caps every
+/// call at a hard-coded 5 s, which fails any cold query on remote object storage with a 502
+/// long before `SearcherOptions::timeout`. The channel timeout here sits just above the query
+/// timeout, so `search()` reports its own clean `Timeout` first.
+fn gateway_client(endpoint: SocketAddr, options: &SearcherOptions) -> Result<SearchServiceClient> {
+    let channel = tonic::transport::Endpoint::from_shared(format!("http://{endpoint}"))
+        .map_err(|err| SearchError::Backend(format!("invalid searcher endpoint {endpoint}: {err}")))?
+        .connect_lazy();
+    let channel =
+        tower::timeout::Timeout::new(channel, options.timeout + Duration::from_secs(5));
+    Ok(create_search_client_from_channel(
+        endpoint,
+        channel,
+        options.grpc_max_message_size,
+    ))
+}
+
 impl Searcher {
     pub async fn connect(minio: MinioConfig, options: SearcherOptions) -> Result<Self> {
         if options.max_limit == 0 {
@@ -215,13 +292,13 @@ impl Searcher {
         rustie_leaf::register();
 
         // Always open metastore: embedded needs it for search; gateway needs it for summary().
-        let (storage_resolver, metastore) =
+        let (base_resolver, metastore) =
             open_metastore(&minio, &options.metastore_uri).await?;
 
         if let Some(endpoint) = options.searcher_endpoint {
             // Gateway: no local SearchServiceImpl / SearcherContext / ClusterClient.
-            let client =
-                create_search_client_from_grpc_addr(endpoint, options.grpc_max_message_size);
+            // Cachey knobs are ignored here (remote node owns storage).
+            let client = gateway_client(endpoint, &options)?;
             return Ok(Self {
                 options,
                 minio,
@@ -233,9 +310,32 @@ impl Searcher {
             });
         }
 
+        if options.cachey.is_some() && options.split_cache_limits.is_some() {
+            warn!(
+                "both --cachey-url and --split-cache-dir are set; they are alternative disk \
+                 layers (Cachey is shared/page-grained; split cache is per-process whole files)"
+            );
+        }
+
+        let storage_resolver = if let Some(cachey_cfg) = &options.cachey {
+            let wrapped = rustie_cachey::storage_resolver(
+                base_resolver.clone(),
+                minio.s3_storage_config(),
+                cachey_cfg.clone(),
+            );
+            run_cachey_startup_check(cachey_cfg, &base_resolver, &minio, &metastore, &options.index_id)
+                .await
+                .map_err(|err| SearchError::Backend(format!("cachey check: {err:#}")))?;
+            wrapped
+        } else {
+            base_resolver.clone()
+        };
+
         let split_cache_opt = match (&options.split_cache_dir, &options.split_cache_limits) {
             (Some(dir), Some(limits)) => Some(
-                SearchSplitCache::with_root_path(dir.clone(), storage_resolver.clone(), *limits)
+                // Keep the *base* resolver: downloads use copy_to, which Cachey would
+                // delegate anyway, but prefetch should not depend on Cachey being up.
+                SearchSplitCache::with_root_path(dir.clone(), base_resolver.clone(), *limits)
                     .map_err(|err| SearchError::Backend(format!("split cache: {err}")))?,
             ),
             _ => None,
@@ -287,8 +387,17 @@ impl Searcher {
     pub async fn refresh(&self) -> Result<()> {
         match &self.backend {
             SearchBackend::Embedded { context, stack } => {
-                let (storage_resolver, metastore) =
+                let (base_resolver, metastore) =
                     open_metastore(&self.minio, &self.options.metastore_uri).await?;
+                let storage_resolver = if let Some(cachey_cfg) = &self.options.cachey {
+                    rustie_cachey::storage_resolver(
+                        base_resolver,
+                        self.minio.s3_storage_config(),
+                        cachey_cfg.clone(),
+                    )
+                } else {
+                    base_resolver
+                };
                 if let Some(split_cache) = &context.split_cache_opt {
                     report_splits_to_cache(&metastore, &self.options.index_id, split_cache).await;
                 }

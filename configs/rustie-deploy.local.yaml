@@ -1,0 +1,58 @@
+# Local deployment: 3 rustie-nodes + Cachey + Postgres metastore on this machine,
+# index `wiki5k-contabo` whose splits live in the Contabo bucket `rustie`.
+# Secrets and the endpoint come from .env (see .env.example); nothing sensitive is in this file.
+#
+#   scripts/local-cluster.sh up        # start everything
+#   scripts/local-cluster.sh status
+#   scripts/local-cluster.sh down
+version: 1
+cluster_id: rustie-local
+
+storage:
+  endpoint: ${S3_ENDPOINT}
+  region: ${S3_REGION}
+  bucket: rustie
+  access_key_id: ${S3_ACCESS_KEY}
+  secret_access_key: ${S3_SECRET_KEY}
+  path_style: true
+
+index:
+  id: wiki5k-contabo
+  root_uri: s3://rustie/indexes
+
+# The existing `rustie-postgres` container (docker start rustie-postgres) publishes :5433.
+metastore_uri: postgres://rustie:${PG_PASSWORD}@127.0.0.1:5433/rustie
+
+# Shared read-through cache in front of Contabo (docker-compose.local.yml).
+cachey:
+  enabled: true
+  url: http://127.0.0.1:9020
+  fallback: true
+
+# Alternative disk layer; must stay off while Cachey is on.
+split_cache:
+  enabled: false
+
+nodes:
+  - node_id: rustie-node-1
+    host: 127.0.0.1
+    data_dir: ${HOME}/.rustie/local/rustie-node-1
+    rest_port: 7280
+    grpc_port: 7281
+    gossip_port: 7282
+  - node_id: rustie-node-2
+    host: 127.0.0.1
+    data_dir: ${HOME}/.rustie/local/rustie-node-2
+    rest_port: 7380
+    grpc_port: 7381
+    gossip_port: 7382
+  - node_id: rustie-node-3
+    host: 127.0.0.1
+    data_dir: ${HOME}/.rustie/local/rustie-node-3
+    rest_port: 7480
+    grpc_port: 7481
+    gossip_port: 7482
+
+serve:
+  bind: 127.0.0.1:8080
+  gateway_node: rustie-node-1

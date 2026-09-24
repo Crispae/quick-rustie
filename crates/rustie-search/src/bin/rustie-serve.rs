@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
+use rustie_deploy::{DeployConfig, Role};
 use rustie_search::{MinioConfig, Searcher, SearcherOptions, server};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -36,6 +37,11 @@ struct Args {
         hide_env_values = true
     )]
     secret_key: String,
+
+    /// S3 signing region (`MINIO_REGION`). Unset: `minio` (the local MinIO default). Set it for
+    /// real providers (Contabo, AWS, ...).
+    #[arg(long, env = "MINIO_REGION")]
+    region: Option<String>,
 
     #[arg(long, default_value = "ie-postings")]
     index_id: String,
@@ -88,6 +94,74 @@ struct Args {
     /// node is resilient.
     #[arg(long, env = "RUSTIE_SEARCHER_ENDPOINT")]
     searcher_endpoint: Option<SocketAddr>,
+
+    /// Cachey base URL for embedded-mode `.split` range reads (e.g. `http://127.0.0.1:9020`).
+    /// Alternative to `--split-cache-dir`. Ignored in gateway mode.
+    #[arg(long, env = "RUSTIE_CACHEY_URL")]
+    cachey_url: Option<String>,
+    /// Extra `C0-Config` overrides appended after `fps=…` (space-separated).
+    #[arg(long)]
+    cachey_c0_config: Option<String>,
+    /// Disable falling back to direct S3 when Cachey fails (benchmarks).
+    #[arg(long, default_value_t = false)]
+    no_cachey_fallback: bool,
+
+    /// One YAML file describing the whole deployment. When set it is authoritative for the
+    /// bind address, S3 storage, index id, metastore, gateway node, Cachey and split cache
+    /// (the matching flags are ignored); tuning flags such as cache sizes still apply.
+    /// See `configs/rustie-deploy.example.yaml`.
+    #[arg(long, env = "RUSTIE_DEPLOY_CONFIG")]
+    deploy_config: Option<PathBuf>,
+
+    /// Validate `--deploy-config` (static checks) and exit; exit code 1 on errors.
+    /// For live checks against S3 / the metastore / Cachey use `rustie-node --check`.
+    #[arg(long, default_value_t = false)]
+    check: bool,
+}
+
+/// Applies the deploy file onto `args` (authoritative fields) after validating it.
+fn apply_deploy(args: &mut Args, path: &std::path::Path) -> anyhow::Result<bool> {
+    let loaded = DeployConfig::load(path)?;
+    let report = rustie_deploy::validate(&loaded, &Role::Serve);
+    if !report.issues.is_empty() || args.check {
+        eprint!("{}", report.render(&path.display().to_string()));
+    }
+    if report.has_errors() {
+        anyhow::bail!("invalid deploy config: fix the errors above");
+    }
+    if args.check {
+        eprintln!("static check passed (use `rustie-node --check` for live checks)");
+        return Ok(false);
+    }
+    let cfg = &loaded.config;
+    args.bind = cfg.serve.bind.parse()?;
+    args.endpoint = cfg.storage.endpoint.clone();
+    args.bucket = cfg.storage.bucket.clone();
+    args.access_key = cfg.storage.access_key_id.clone();
+    args.secret_key = cfg.storage.secret_access_key.clone();
+    args.region = Some(cfg.storage.region.clone());
+    args.index_id = cfg.index.id.clone();
+    args.metastore_uri = Some(cfg.metastore_uri.clone());
+    if let Some(endpoint) = rustie_deploy::gateway_endpoint(cfg) {
+        use std::net::ToSocketAddrs;
+        args.searcher_endpoint = Some(
+            endpoint
+                .to_socket_addrs()
+                .map_err(|e| anyhow::anyhow!("cannot resolve gateway node `{endpoint}`: {e}"))?
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("gateway node `{endpoint}` resolved to no address"))?,
+        );
+    } else {
+        args.searcher_endpoint = None;
+    }
+    // Caches are only meaningful for the embedded stack; in gateway mode they live on the nodes.
+    args.cachey_url = cfg.cachey.enabled.then(|| cfg.cachey.url.clone());
+    args.cachey_c0_config = cfg.cachey.c0_config.clone();
+    args.no_cachey_fallback = !cfg.cachey.fallback || args.no_cachey_fallback;
+    args.split_cache_dir = cfg.split_cache.enabled.then(|| cfg.split_cache.dir.clone().map(PathBuf::from)).flatten();
+    args.split_cache_max_mb = cfg.split_cache.max_gb * 1000;
+    args.split_cache_max_splits = cfg.split_cache.max_splits;
+    Ok(true)
 }
 
 fn main() -> ExitCode {
@@ -122,13 +196,21 @@ fn main() -> ExitCode {
     }
 }
 
-async fn run(args: Args) -> anyhow::Result<()> {
+async fn run(mut args: Args) -> anyhow::Result<()> {
+    if let Some(path) = args.deploy_config.clone() {
+        if !apply_deploy(&mut args, &path)? {
+            return Ok(());
+        }
+    } else if args.check {
+        anyhow::bail!("--check requires --deploy-config");
+    }
     let minio = MinioConfig {
         endpoint: args.endpoint,
         bucket: args.bucket,
         access_key: args.access_key,
         secret_key: args.secret_key,
         prefix: String::new(),
+        region: args.region,
     };
     let mut options = SearcherOptions::for_bucket(&minio.bucket);
     options.index_id = args.index_id;
@@ -146,6 +228,12 @@ async fn run(args: Args) -> anyhow::Result<()> {
             options.with_split_cache(dir, args.split_cache_max_mb, args.split_cache_max_splits)?;
     }
     options.searcher_endpoint = args.searcher_endpoint;
+    if let Some(url) = args.cachey_url {
+        let mut cfg = rustie_cachey::CacheyConfig::new(url.parse()?);
+        cfg.c0_config = args.cachey_c0_config;
+        cfg.fallback = !args.no_cachey_fallback;
+        options.cachey = Some(cfg);
+    }
 
     let searcher = Arc::new(Searcher::connect(minio, options).await?);
     if searcher.is_gateway() {

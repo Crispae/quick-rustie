@@ -1,0 +1,26 @@
+[package]
+name = "rustie-cachey"
+version = "0.1.0"
+edition = "2024"
+description = "Read-through Cachey wrapper for Quickwit S3 split-file get_slice"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+bytes = "1"
+quickwit-common = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-config = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+quickwit-storage = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
+regex = "1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+tokio = { version = "=1.52.3", features = ["full"] }
+tracing = "0.1"
+url = "2"
+
+[dev-dependencies]
+axum = "0.8"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+

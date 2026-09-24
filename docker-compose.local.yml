@@ -1,0 +1,33 @@
+# Cachey in front of the real S3 (Contabo) for the local multi-node deployment.
+# Values come from .env (see .env.example). Not to be run together with the `cachey` service of
+# docker-compose.minio.yml (same host port and purpose, MinIO-backed).
+#
+#   docker compose -f docker-compose.local.yml up -d cachey
+services:
+  cachey:
+    image: ghcr.io/s2-streamstore/cachey:0.11.1
+    container_name: rustie-cachey-s3
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9020:9020"
+    environment:
+      # Cachey reads S3 with the standard AWS env; it must match storage.* in the deploy file.
+      AWS_ENDPOINT_URL: ${S3_ENDPOINT:?set S3_ENDPOINT in .env}
+      AWS_REGION: ${S3_REGION:?set S3_REGION in .env}
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}
+      AWS_EC2_METADATA_DISABLED: "true"
+    command:
+      - --memory
+      - 2GiB
+      - --disk-path
+      - /cache
+      - --disk-capacity
+      - 20GiB
+      - --port
+      - "9020"
+    volumes:
+      - rustie_cachey_s3_data:/cache
+
+volumes:
+  rustie_cachey_s3_data:

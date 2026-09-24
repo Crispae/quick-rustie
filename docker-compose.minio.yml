@@ -32,5 +32,35 @@ services:
         echo 'Bucket rustie-dev ready';
       "
 
+  # Read-through cache for S3/MinIO range reads (searchers only).
+  # Host: http://127.0.0.1:9020 — Cachey must use the same endpoint+creds as MinIO
+  # (container DNS here; host processes use http://127.0.0.1:9010 for MinIO).
+  cachey:
+    image: ghcr.io/s2-streamstore/cachey:0.11.1
+    container_name: rustie-cachey
+    depends_on:
+      minio:
+        condition: service_started
+    ports:
+      - "9020:9020"
+    environment:
+      AWS_ENDPOINT_URL: http://rustie-minio:9000
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_EC2_METADATA_DISABLED: "true"
+    command:
+      - --memory
+      - 2GiB
+      - --disk-path
+      - /cache
+      - --disk-capacity
+      - 20GiB
+      - --port
+      - "9020"
+    volumes:
+      - rustie_cachey_data:/cache
+
 volumes:
   rustie_minio_data:
+  rustie_cachey_data:

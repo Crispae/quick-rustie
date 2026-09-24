@@ -1136,6 +1136,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "cfg_aliases"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
+
+[[package]]
 name = "chacha20"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1257,6 +1263,16 @@ name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
+
+[[package]]
+name = "combine"
+version = "4.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfc320937d09e6de266b31b9afb480f197d7a861be86be7cb2ea7e5d1bfffc5e"
+dependencies = [
+ "bytes",
+ "memchr",
+]
 
 [[package]]
 name = "compression-codecs"
@@ -2210,8 +2226,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2975,6 +2993,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "jni"
+version = "0.22.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5efd9a482cf3a427f00d6b35f14332adc7902ce91efb778580e180ff90fa3498"
+dependencies = [
+ "cfg-if",
+ "combine",
+ "jni-macros",
+ "jni-sys",
+ "log",
+ "simd_cesu8",
+ "thiserror 2.0.20",
+ "walkdir",
+ "windows-link",
+]
+
+[[package]]
+name = "jni-macros"
+version = "0.22.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a00109accc170f0bdb141fed3e393c565b6f5e072365c3bd58f5b062591560a3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rustc_version",
+ "simd_cesu8",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "jni-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6377a88cb3910bee9b0fa88d4f42e1d2da8e79915598f65fb0c7ee14c878af2"
+dependencies = [
+ "jni-sys-macros",
+]
+
+[[package]]
+name = "jni-sys-macros"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38c0b942f458fe50cdac086d2f946512305e5631e720728f2a61aabcd47a6264"
+dependencies = [
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "jobserver"
 version = "0.1.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3211,6 +3278,12 @@ checksum = "ff9840bcc50b71349309900da0ce7279aa336ae71d73250b07998932c7d97c25"
 dependencies = [
  "hashbrown 0.17.1",
 ]
+
+[[package]]
+name = "lru-slab"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lz4_flex"
@@ -4528,7 +4601,7 @@ dependencies = [
 [[package]]
 name = "quickwit-actors"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4547,7 +4620,7 @@ dependencies = [
 [[package]]
 name = "quickwit-aws"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "aws-config",
  "aws-runtime",
@@ -4566,7 +4639,7 @@ dependencies = [
 [[package]]
 name = "quickwit-cluster"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4594,7 +4667,7 @@ dependencies = [
 [[package]]
 name = "quickwit-codegen"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "heck 0.5.0",
@@ -4609,7 +4682,7 @@ dependencies = [
 [[package]]
 name = "quickwit-common"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "async-speed-limit",
@@ -4653,7 +4726,7 @@ dependencies = [
 [[package]]
 name = "quickwit-compaction"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4678,7 +4751,7 @@ dependencies = [
 [[package]]
 name = "quickwit-config"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4709,7 +4782,7 @@ dependencies = [
 [[package]]
 name = "quickwit-control-plane"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4738,7 +4811,7 @@ dependencies = [
 [[package]]
 name = "quickwit-datetime"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "itertools 0.15.0",
  "serde",
@@ -4751,7 +4824,7 @@ dependencies = [
 [[package]]
 name = "quickwit-directories"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4769,7 +4842,7 @@ dependencies = [
 [[package]]
 name = "quickwit-doc-mapper"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4798,12 +4871,12 @@ dependencies = [
 [[package]]
 name = "quickwit-dst"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 
 [[package]]
 name = "quickwit-extensions"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4815,7 +4888,7 @@ dependencies = [
 [[package]]
 name = "quickwit-index-management"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "futures",
@@ -4838,7 +4911,7 @@ dependencies = [
 [[package]]
 name = "quickwit-indexing"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4885,7 +4958,7 @@ dependencies = [
 [[package]]
 name = "quickwit-ingest"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4922,7 +4995,7 @@ dependencies = [
 [[package]]
 name = "quickwit-jaeger"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "async-trait",
  "itertools 0.15.0",
@@ -4949,7 +5022,7 @@ dependencies = [
 [[package]]
 name = "quickwit-janitor"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4982,7 +5055,7 @@ dependencies = [
 [[package]]
 name = "quickwit-macros"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4992,7 +5065,7 @@ dependencies = [
 [[package]]
 name = "quickwit-metastore"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5033,7 +5106,7 @@ dependencies = [
 [[package]]
 name = "quickwit-metrics"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "atomic_float",
  "const_format",
@@ -5048,7 +5121,7 @@ dependencies = [
 [[package]]
 name = "quickwit-opentelemetry"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "arrow",
@@ -5072,7 +5145,7 @@ dependencies = [
 [[package]]
 name = "quickwit-parquet-engine"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "arrow",
@@ -5100,7 +5173,7 @@ dependencies = [
 [[package]]
 name = "quickwit-proto"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5139,7 +5212,7 @@ dependencies = [
 [[package]]
 name = "quickwit-query"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5164,7 +5237,7 @@ dependencies = [
 [[package]]
 name = "quickwit-search"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5205,7 +5278,7 @@ dependencies = [
 [[package]]
 name = "quickwit-serve"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5277,7 +5350,7 @@ dependencies = [
 [[package]]
 name = "quickwit-storage"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "ahash",
  "anyhow",
@@ -5320,7 +5393,7 @@ dependencies = [
 [[package]]
 name = "quickwit-telemetry-exporters"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "metrics",
@@ -5344,7 +5417,7 @@ dependencies = [
 [[package]]
 name = "quickwit-transport"
 version = "0.9.0"
-source = "git+https://github.com/Crispae/quickwit-custom?rev=4488aed884b7e99eec7b362fe07523a88e41fb19#4488aed884b7e99eec7b362fe07523a88e41fb19"
+source = "git+https://github.com/Crispae/quickwit-custom?rev=2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5#2bc4fe5f8524046bf52c66e683cf7b43bf1e93f5"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5359,6 +5432,63 @@ dependencies = [
  "tonic",
  "tower",
  "tracing",
+]
+
+[[package]]
+name = "quinn"
+version = "0.11.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c1a41e437b6bbd489372cd4971de128e85c855f56c57f283d20ff016cf7c0a8"
+dependencies = [
+ "bytes",
+ "cfg_aliases",
+ "pin-project-lite",
+ "quinn-proto",
+ "quinn-udp",
+ "rustc-hash",
+ "rustls 0.23.45",
+ "socket2 0.5.10",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
+name = "quinn-proto"
+version = "0.11.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04759210543be93709136e28212294a659ef5001836ff4eab4d663e4529bba83"
+dependencies = [
+ "aws-lc-rs",
+ "bytes",
+ "getrandom 0.4.3",
+ "lru-slab",
+ "rand 0.10.3",
+ "rand_pcg",
+ "ring",
+ "rustc-hash",
+ "rustls 0.23.45",
+ "rustls-pki-types",
+ "slab",
+ "thiserror 2.0.20",
+ "tinyvec",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
+name = "quinn-udp"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35a133f956daabe89a61a685c2649f13d82d5aa4bd5d12d1277e1072a21c0694"
+dependencies = [
+ "cfg_aliases",
+ "libc",
+ "once_cell",
+ "socket2 0.5.10",
+ "tracing",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5467,6 +5597,15 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_pcg"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
+dependencies = [
+ "rand_core 0.10.1",
+]
 
 [[package]]
 name = "rand_xorshift"
@@ -5610,13 +5749,19 @@ dependencies = [
  "http-body 1.1.0",
  "http-body-util",
  "hyper 1.11.1",
+ "hyper-rustls 0.27.10",
  "hyper-util",
  "js-sys",
  "log",
  "percent-encoding",
  "pin-project-lite",
+ "quinn",
+ "rustls 0.23.45",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
  "sync_wrapper",
  "tokio",
+ "tokio-rustls 0.26.5",
  "tower",
  "tower-http",
  "tower-service",
@@ -5721,6 +5866,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustie-cachey"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bytes",
+ "http-body-util",
+ "quickwit-common",
+ "quickwit-config",
+ "quickwit-storage",
+ "regex",
+ "reqwest",
+ "tokio",
+ "tower",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "rustie-compiler"
 version = "0.1.0"
 dependencies = [
@@ -5732,6 +5897,17 @@ dependencies = [
  "rustie-schema",
  "serde",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rustie-deploy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "url",
 ]
 
 [[package]]
@@ -5824,8 +6000,11 @@ dependencies = [
  "quickwit-common",
  "quickwit-config",
  "quickwit-metastore",
+ "quickwit-proto",
  "quickwit-serve",
  "quickwit-storage",
+ "rustie-cachey",
+ "rustie-deploy",
  "rustie-leaf",
  "serde",
  "serde_yaml",
@@ -5873,7 +6052,9 @@ dependencies = [
  "quickwit-query",
  "quickwit-search",
  "quickwit-storage",
+ "rustie-cachey",
  "rustie-compiler",
+ "rustie-deploy",
  "rustie-indexer",
  "rustie-leaf",
  "rustie-query",
@@ -5883,6 +6064,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tonic",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -5971,8 +6153,36 @@ version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
 dependencies = [
+ "web-time",
  "zeroize",
 ]
+
+[[package]]
+name = "rustls-platform-verifier"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26d1e2536ce4f35f4846aa13bff16bd0ff40157cdb14cc056c7b14ba41233ba0"
+dependencies = [
+ "core-foundation",
+ "core-foundation-sys",
+ "jni",
+ "log",
+ "once_cell",
+ "rustls 0.23.45",
+ "rustls-native-certs",
+ "rustls-platform-verifier-android",
+ "rustls-webpki 0.103.15",
+ "security-framework",
+ "security-framework-sys",
+ "webpki-root-certs",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rustls-platform-verifier-android"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
@@ -6398,6 +6608,16 @@ name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
+name = "simd_cesu8"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11031e251abf8611c80f460e19dbdeb54a66db918e49c65a7065b46ac7aec520"
+dependencies = [
+ "rustc_version",
+ "simdutf8",
+]
 
 [[package]]
 name = "simdutf8"
@@ -7933,6 +8153,15 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webpki-root-certs"
+version = "1.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

@@ -31,10 +31,12 @@ utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 rustie-compiler = { path = "../rustie-compiler" }
+rustie-deploy = { path = "../rustie-deploy" }
 rustie-indexer = { path = "../rustie-indexer" }
 rustie-leaf = { path = "../rustie-leaf" }
 rustie-query = { path = "../rustie-query" }
 rustie-schema = { path = "../rustie-schema" }
+rustie-cachey = { path = "../rustie-cachey" }
 
 quickwit-config = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
 quickwit-metastore = { git = "https://github.com/quickwit-oss/quickwit.git", tag = "v0.9.0" }
@@ -45,6 +47,9 @@ quickwit-storage = { git = "https://github.com/quickwit-oss/quickwit.git", tag =
 
 # Same pin as the root crate.
 tokio = { version = "=1.52.3", features = ["full"] }
+# Gateway gRPC channel with a configurable timeout (Quickwit's helper hard-codes 5 s).
+tonic = "0.14"
+tower = { version = "0.5", features = ["timeout"] }
 
 [dev-dependencies]
 tempfile = "3"

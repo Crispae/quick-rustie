@@ -45,7 +45,33 @@ failure, `504` timeout.
 Flags: `--bind` (default `127.0.0.1:8080`), `--index-id`, `--metastore-uri`, `--endpoint/--bucket/
 --access-key/--secret-key` (or `MINIO_*` env), `--max-limit`, `--timeout-secs`,
 `--max-concurrent-searches`, `--refresh-secs`, **`--searcher-endpoint`** (optional gRPC addr of a
-`rustie-node`; when set, this process is a gateway and does not embed the leaf stack).
+`rustie-node`; when set, this process is a gateway and does not embed the leaf stack),
+**`--cachey-url`** / `RUSTIE_CACHEY_URL` (embedded mode only; see Cachey below),
+`--cachey-c0-config`, `--no-cachey-fallback`.
+
+## Cachey vs split cache (embedded mode)
+
+These are **alternative** disk layers under `Storage::get_slice` for `.split` files:
+
+| | When to use |
+| --- | --- |
+| **`--split-cache-dir`** | Single searcher whose local disk holds the corpus; whole splits on disk. |
+| **`--cachey-url http://127.0.0.1:9020`** | Shared page cache (several searchers, autoscaling, or corpus ≫ local disk). |
+
+Setting both logs a warning. Cachey must talk to the **same** S3/MinIO endpoint as rustie
+(`AWS_ENDPOINT_URL` on the Cachey process; MinIO needs path-style / `fps=true`, which rustie
+sends automatically). Start Cachey with:
+
+```bash
+docker compose -f docker-compose.minio.yml up -d cachey
+```
+
+`rustie-bench search --cachey-url …` prints a `CacheyStats` delta after the run. First-page
+hit/miss counters are approximate (HTTP/1.1); use Cachey’s `/metrics` for S3 GET counts.
+
+E2E checklist: bench with and without `--cachey-url --no-cachey-fallback` (identical hits);
+with fallback enabled, stop Cachey mid-run and confirm queries still succeed
+(`transport_fallbacks > 0`).
 
 ## Topologies
 
