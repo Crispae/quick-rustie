@@ -50,6 +50,10 @@ struct Args {
     )]
     secret_key: String,
 
+    /// Signing region for real S3-compatible providers (unset: the MinIO flavor's default).
+    #[arg(long, env = "MINIO_REGION")]
+    region: Option<String>,
+
     #[arg(long, default_value = "ie-postings")]
     index_id: String,
 
@@ -149,7 +153,7 @@ async fn run(args: Args) -> anyhow::Result<ExitCode> {
         access_key: args.access_key,
         secret_key: args.secret_key,
         prefix: String::new(),
-        region: None,
+        region: args.region,
     };
     let mut options = IndexerOptions::for_bucket(&minio.bucket);
     options.index_id = args.index_id;

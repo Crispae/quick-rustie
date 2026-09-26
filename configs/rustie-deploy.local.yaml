@@ -17,8 +17,8 @@ storage:
   path_style: true
 
 index:
-  id: wiki5k-contabo
-  root_uri: s3://rustie/indexes
+  id: pubmed
+  root_uri: s3://rustie/pubmed
 
 # The existing `rustie-postgres` container (docker start rustie-postgres) publishes :5433.
 metastore_uri: postgres://rustie:${PG_PASSWORD}@127.0.0.1:5433/rustie
@@ -52,6 +52,18 @@ nodes:
     rest_port: 7480
     grpc_port: 7481
     gossip_port: 7482
+  - node_id: rustie-node-4
+    host: 127.0.0.1
+    data_dir: ${HOME}/.rustie/local/rustie-node-4
+    rest_port: 7580
+    grpc_port: 7581
+    gossip_port: 7582
+  - node_id: rustie-node-5
+    host: 127.0.0.1
+    data_dir: ${HOME}/.rustie/local/rustie-node-5
+    rest_port: 7680
+    grpc_port: 7681
+    gossip_port: 7682
 
 serve:
   bind: 127.0.0.1:8080
